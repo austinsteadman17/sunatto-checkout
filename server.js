@@ -19,9 +19,11 @@
 // a Visa debit test card) before ever pointing this at the live account.
 
 require('dotenv').config();
+const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const Stripe = require('stripe');
+const { getStore } = require('@netlify/blobs');
 
 const app = express();
 app.use(express.json());
@@ -195,11 +197,15 @@ app.post('/api/finalize', async (req, res) => {
       clientSecret: confirmed.client_secret, // frontend may need this if 3DS/next_action is required
     });
 
-    // Fire-and-forget: don't make the customer wait on Monday.com, and never
-    // let a Monday.com hiccup affect the payment result already sent above.
+    // Fire-and-forget: don't make the customer wait on Monday.com (or the
+    // payment-links hub lookup below), and never let either hiccup affect
+    // the payment result already sent above.
     if (confirmed.status === 'succeeded' || confirmed.status === 'processing') {
       syncPaymentToMonday(confirmed).catch((err) => {
         console.error('Monday.com sync failed (payment itself was NOT affected):', err);
+      });
+      findAndMarkLinkPaid(confirmed).catch((err) => {
+        console.error('Payment-links hub: marking link paid failed (payment itself was NOT affected):', err);
       });
     }
   } catch (err) {
@@ -554,6 +560,39 @@ Questions? Call us at (210) 504-7669.
   return { subject, textBody, htmlBody };
 }
 
+// Shared by both the initial send (below) and the hub's "Resend" button
+// (section 7) so there's exactly one place that talks to Postmark.
+async function sendViaPostmark({ to, subject, htmlBody, textBody }) {
+  if (!process.env.POSTMARK_SERVER_TOKEN) {
+    throw new Error('POSTMARK_SERVER_TOKEN is not set on the server.');
+  }
+
+  const response = await fetch(POSTMARK_API_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Postmark-Server-Token': process.env.POSTMARK_SERVER_TOKEN,
+    },
+    body: JSON.stringify({
+      From: `Southern Energy Distributors <${POSTMARK_FROM_EMAIL}>`,
+      To: to,
+      ReplyTo: POSTMARK_REPLY_TO,
+      Subject: subject,
+      HtmlBody: htmlBody,
+      TextBody: textBody,
+      MessageStream: 'outbound',
+    }),
+  });
+
+  const json = await response.json();
+  if (!response.ok || json.ErrorCode) {
+    console.error('Postmark send failed:', json);
+    throw new Error(json.Message || 'Postmark rejected the email.');
+  }
+  return json.MessageID;
+}
+
 app.post('/api/send-homeowner-email', async (req, res) => {
   try {
     const { customerName, customerEmail, jobAddress, type, amount, checkoutUrl } = req.body;
@@ -567,44 +606,426 @@ app.post('/api/send-homeowner-email', async (req, res) => {
     if (!['deposit', 'balance'].includes(type)) {
       return res.status(400).json({ error: 'type must be "deposit" or "balance"' });
     }
-    if (!process.env.POSTMARK_SERVER_TOKEN) {
-      return res.status(500).json({ error: 'POSTMARK_SERVER_TOKEN is not set on the server.' });
-    }
 
     const { subject, textBody, htmlBody } = buildHomeownerEmail({
       customerName, jobAddress, type, amount, checkoutUrl,
     });
+    const messageId = await sendViaPostmark({ to: customerEmail, subject, htmlBody, textBody });
 
-    const response = await fetch(POSTMARK_API_URL, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-Postmark-Server-Token': process.env.POSTMARK_SERVER_TOKEN,
-      },
-      body: JSON.stringify({
-        From: `Southern Energy Distributors <${POSTMARK_FROM_EMAIL}>`,
-        To: customerEmail,
-        ReplyTo: POSTMARK_REPLY_TO,
-        Subject: subject,
-        HtmlBody: htmlBody,
-        TextBody: textBody,
-        MessageStream: 'outbound',
-      }),
-    });
-
-    const json = await response.json();
-    if (!response.ok || json.ErrorCode) {
-      console.error('Postmark send failed:', json);
-      return res.status(502).json({ error: json.Message || 'Postmark rejected the email.' });
-    }
-
-    res.json({ sent: true, messageId: json.MessageID });
+    res.json({ sent: true, messageId });
   } catch (err) {
     console.error('send-homeowner-email error:', err);
+    res.status(err.message === 'POSTMARK_SERVER_TOKEN is not set on the server.' ? 500 : 502)
+      .json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 7. Payment-links hub — tracks every link intake.html has generated, so
+// staff have one place to see what's outstanding and resend a link without
+// digging through texts/emails. Backed by Netlify Blobs (small JSON
+// documents, not a real database — plenty for this volume, and it needs
+// zero extra sign-up since it's built into the same Netlify project
+// already hosting this site).
+//
+// Access model: each person logs in with their first/last name (creating
+// a PIN the first time, entering it thereafter — see the /api/hub/*
+// endpoints below). What THEY see on the hub is then derived entirely from
+// the "Sunatto Pipeline 2026" Monday board: a job is visible to them if
+// their name appears in that job's Sales Rep, Office, OR Manager column
+// (all three checked the same way — there's no separate admin/role flag
+// to maintain here, it's 100% driven by who's assigned to what in
+// Monday). A payment link is then visible if its customer name + address
+// fuzzy-matches one of those jobs, using the same normalize/match helpers
+// as syncPaymentToMonday above (section 5).
+//
+// Two different trust levels on purpose:
+//   - Creating a link (POST /api/links) is called silently by intake.js
+//     for a job the rep is already looking at — same trust level as
+//     intake.html itself, so no login required.
+//   - Everything under /api/hub/* and /api/links/:id/resend, plus reading
+//     the list itself (GET /api/links), requires a valid session (the
+//     X-Hub-Session header, obtained by logging in) — see requireHubUser.
+//
+// IMPORTANT: like the Stripe/Monday/Postmark code above, this has NOT been
+// tested against live Netlify Blobs or the live Monday API (this sandbox
+// can't reach either). Create a test account, confirm login works, and
+// confirm your own jobs actually show up on /hub.html before relying on
+// this for real staff. See README.
+// ---------------------------------------------------------------------
+const LINKS_STORE_NAME = 'sunatto-payment-links';
+const LINKS_BLOB_KEY = 'links.json';
+const USERS_STORE_NAME = 'sunatto-hub-users';
+const USERS_BLOB_KEY = 'users.json';
+
+// The three "people" columns on the Sunatto Pipeline 2026 board (same
+// board as MONDAY_BOARD_ID above) that together determine who can see a
+// given job on the hub.
+const MONDAY_SALES_REP_COLUMN_ID = 'multiple_person_mkrwz37g';
+const MONDAY_OFFICE_COLUMN_ID = 'multiple_person_mksd8yte';
+const MONDAY_MANAGER_COLUMN_ID = 'multiple_person_mkrwcp2r';
+
+async function loadLinks() {
+  const store = getStore(LINKS_STORE_NAME);
+  const data = await store.get(LINKS_BLOB_KEY, { type: 'json' });
+  return Array.isArray(data) ? data : [];
+}
+
+async function saveLinks(links) {
+  const store = getStore(LINKS_STORE_NAME);
+  await store.setJSON(LINKS_BLOB_KEY, links);
+}
+
+async function loadUsers() {
+  const store = getStore(USERS_STORE_NAME);
+  const data = await store.get(USERS_BLOB_KEY, { type: 'json' });
+  return Array.isArray(data) ? data : [];
+}
+
+async function saveUsers(users) {
+  const store = getStore(USERS_STORE_NAME);
+  await store.setJSON(USERS_BLOB_KEY, users);
+}
+
+function fullNameOf(user) {
+  return `${user.firstName} ${user.lastName}`;
+}
+
+function hashPin(pin, salt) {
+  return crypto.pbkdf2Sync(String(pin), salt, 100000, 32, 'sha256').toString('hex');
+}
+
+// Looks up the logged-in user from the X-Hub-Session header. Sends 401
+// and returns null if there's no valid session — callers should
+// `if (!user) return;` right after calling this.
+async function requireHubUser(req, res) {
+  const token = req.get('X-Hub-Session');
+  if (!token) {
+    res.status(401).json({ error: 'Not logged in.' });
+    return null;
+  }
+  const users = await loadUsers();
+  const user = users.find((u) => u.sessionToken === token);
+  if (!user) {
+    res.status(401).json({ error: 'Session expired — please log in again.' });
+    return null;
+  }
+  return user;
+}
+
+// --- Hub login: name + PIN, no separate sign-up flow. ---
+
+// Step 1 of the frontend's flow — lets hub.js know whether to show the
+// "create a PIN" screen or the "enter your PIN" screen for this name.
+app.post('/api/hub/lookup-name', async (req, res) => {
+  try {
+    const { firstName, lastName } = req.body;
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: 'firstName and lastName are required.' });
+    }
+    const users = await loadUsers();
+    const target = normalizeForMatch(`${firstName} ${lastName}`);
+    const existing = users.find((u) => normalizeForMatch(fullNameOf(u)) === target);
+    res.json({ userExists: !!existing });
+  } catch (err) {
+    console.error('hub/lookup-name error:', err);
     res.status(500).json({ error: err.message });
   }
 });
+
+// First-time visitors only — fails with 409 if that name already has a
+// PIN (they should log in instead, not create a second account).
+app.post('/api/hub/create-user', async (req, res) => {
+  try {
+    const { firstName, lastName, pin } = req.body;
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: 'firstName and lastName are required.' });
+    }
+    if (!/^\d{4,6}$/.test(pin || '')) {
+      return res.status(400).json({ error: 'PIN must be 4-6 digits.' });
+    }
+
+    const users = await loadUsers();
+    const target = normalizeForMatch(`${firstName} ${lastName}`);
+    if (users.some((u) => normalizeForMatch(fullNameOf(u)) === target)) {
+      return res.status(409).json({ error: 'An account already exists for that name — enter your PIN instead.' });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const sessionToken = crypto.randomUUID();
+    const newUser = {
+      id: crypto.randomUUID(),
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      pinSalt: salt,
+      pinHash: hashPin(pin, salt),
+      sessionToken,
+      createdAt: new Date().toISOString(),
+    };
+    users.push(newUser);
+    await saveUsers(users);
+
+    res.json({ sessionToken, userId: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName });
+  } catch (err) {
+    console.error('hub/create-user error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Returning visitors. Accepts either a userId (once hub.js has one cached
+// on this device, from localStorage) or a firstName/lastName pair (first
+// login on a new device, or after using "Switch user").
+app.post('/api/hub/login', async (req, res) => {
+  try {
+    const { userId, firstName, lastName, pin } = req.body;
+    if (!pin) {
+      return res.status(400).json({ error: 'PIN is required.' });
+    }
+
+    const users = await loadUsers();
+    let user = null;
+    if (userId) {
+      user = users.find((u) => u.id === userId);
+    } else if (firstName && lastName) {
+      const target = normalizeForMatch(`${firstName} ${lastName}`);
+      user = users.find((u) => normalizeForMatch(fullNameOf(u)) === target);
+    } else {
+      return res.status(400).json({ error: 'userId or firstName/lastName is required.' });
+    }
+
+    if (!user || hashPin(pin, user.pinSalt) !== user.pinHash) {
+      return res.status(401).json({ error: 'Incorrect PIN.' });
+    }
+
+    user.sessionToken = crypto.randomUUID(); // rotate on every login
+    await saveUsers(users);
+
+    res.json({ sessionToken: user.sessionToken, userId: user.id, firstName: user.firstName, lastName: user.lastName });
+  } catch (err) {
+    console.error('hub/login error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Queries the Sunatto Pipeline 2026 board directly (bypassing
+// findMondayItem's single-match requirement above, since here we WANT
+// every job this person is attached to, not just one) and returns
+// { name, address } for every item where fullName shows up in the Sales
+// Rep, Office, or Manager column. Each of those columns' text value is a
+// comma-separated list of Monday people's display names.
+async function getUserAttachedJobs(fullName) {
+  const targetName = normalizeForMatch(fullName);
+  if (!targetName) return [];
+
+  const peopleColumnIds = [MONDAY_SALES_REP_COLUMN_ID, MONDAY_OFFICE_COLUMN_ID, MONDAY_MANAGER_COLUMN_ID];
+  let cursor = null;
+  const jobs = [];
+
+  do {
+    const data = await mondayRequest(
+      `query ($boardId: [ID!], $cursor: String) {
+        boards(ids: $boardId) {
+          items_page(limit: 100, cursor: $cursor) {
+            cursor
+            items {
+              id
+              name
+              column_values(ids: ["${MONDAY_ADDRESS_COLUMN_ID}", ${peopleColumnIds.map((id) => `"${id}"`).join(', ')}]) {
+                id
+                text
+              }
+            }
+          }
+        }
+      }`,
+      { boardId: [MONDAY_BOARD_ID], cursor }
+    );
+
+    const page = data.boards[0].items_page;
+    for (const item of page.items) {
+      const values = {};
+      for (const cv of item.column_values) values[cv.id] = cv.text;
+
+      const peopleText = peopleColumnIds.map((id) => values[id]).filter(Boolean).join(', ');
+      const attached = peopleText
+        .split(',')
+        .map((n) => normalizeForMatch(n))
+        .some((n) => n && (n.includes(targetName) || targetName.includes(n)));
+
+      if (attached) {
+        jobs.push({ name: item.name, address: values[MONDAY_ADDRESS_COLUMN_ID] || '' });
+      }
+    }
+    cursor = page.cursor;
+  } while (cursor);
+
+  return jobs;
+}
+
+// True if a payment-link record's customer name + address fuzzy-matches
+// any of this user's Monday jobs.
+function linkMatchesJobs(link, normalizedJobs) {
+  const linkName = normalizeForMatch(link.customerName);
+  const linkAddress = normalizeAddressForMatch(link.jobAddress);
+  if (!linkName || !linkAddress) return false;
+  return normalizedJobs.some((j) =>
+    j.name && j.address
+    && (j.name.includes(linkName) || linkName.includes(j.name))
+    && (j.address.includes(linkAddress) || linkAddress.includes(j.address))
+  );
+}
+
+// Called by intake.js right before Copy Link / Send Email / Continue to
+// Payment — no login required (see note above). Returns the new link's
+// id (currently unused by intake.js, but available if it ever needs to
+// reference the record it just created).
+app.post('/api/links', async (req, res) => {
+  try {
+    const { customerName, customerEmail, customerPhone, jobAddress, type, amount, checkoutUrl } = req.body;
+
+    if (!['deposit', 'balance'].includes(type)) {
+      return res.status(400).json({ error: 'type must be "deposit" or "balance"' });
+    }
+    if (!checkoutUrl) {
+      return res.status(400).json({ error: 'checkoutUrl is required' });
+    }
+
+    const now = new Date().toISOString();
+    const record = {
+      id: crypto.randomUUID(),
+      customerName: customerName || '',
+      customerEmail: customerEmail || '',
+      customerPhone: customerPhone || '',
+      jobAddress: jobAddress || '',
+      type,
+      amountCents: Math.round(parseFloat(amount || '0') * 100),
+      checkoutUrl,
+      createdAt: now,
+      lastSentAt: now,
+      sentCount: 1,
+      paid: false,
+      paidAt: null,
+      paymentIntentId: null,
+    };
+
+    const links = await loadLinks();
+    links.unshift(record); // newest first
+    await saveLinks(links);
+
+    res.json({ id: record.id });
+  } catch (err) {
+    console.error('create link error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Powers hub.html's table — session-gated, and filtered down to only the
+// links whose job this user is attached to on the Monday board.
+app.get('/api/links', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const [links, jobs] = await Promise.all([loadLinks(), getUserAttachedJobs(fullNameOf(user))]);
+    const normalizedJobs = jobs.map((j) => ({
+      name: normalizeForMatch(j.name),
+      address: normalizeAddressForMatch(j.address),
+    }));
+    const visibleLinks = links.filter((l) => linkMatchesJobs(l, normalizedJobs));
+    res.json({ links: visibleLinks, jobCount: jobs.length });
+  } catch (err) {
+    console.error('list links error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hub's "Resend" button — session-gated, and re-checks that the target
+// link actually belongs to one of this user's jobs before sending, so a
+// logged-in rep can't resend an arbitrary link by guessing its id.
+app.post('/api/links/:id/resend', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const [links, jobs] = await Promise.all([loadLinks(), getUserAttachedJobs(fullNameOf(user))]);
+    const normalizedJobs = jobs.map((j) => ({
+      name: normalizeForMatch(j.name),
+      address: normalizeAddressForMatch(j.address),
+    }));
+
+    const record = links.find((l) => l.id === req.params.id);
+    if (!record || !linkMatchesJobs(record, normalizedJobs)) {
+      return res.status(404).json({ error: 'Link not found.' });
+    }
+    if (!record.customerEmail) {
+      return res.status(400).json({ error: 'This link has no email on file — copy and send it manually.' });
+    }
+
+    const { subject, textBody, htmlBody } = buildHomeownerEmail({
+      customerName: record.customerName,
+      jobAddress: record.jobAddress,
+      type: record.type,
+      amount: (record.amountCents / 100).toFixed(2),
+      checkoutUrl: record.checkoutUrl,
+    });
+    const messageId = await sendViaPostmark({ to: record.customerEmail, subject, htmlBody, textBody });
+
+    record.lastSentAt = new Date().toISOString();
+    record.sentCount = (record.sentCount || 0) + 1;
+    await saveLinks(links);
+
+    res.json({ sent: true, messageId });
+  } catch (err) {
+    console.error('resend link error:', err);
+    res.status(err.message === 'POSTMARK_SERVER_TOKEN is not set on the server.' ? 500 : 502)
+      .json({ error: err.message });
+  }
+});
+
+// Best-effort: after a payment succeeds (called from /api/finalize above),
+// try to find the ONE unpaid link record that matches this PaymentIntent's
+// name + address + type + base amount, and mark it paid. Same
+// "never guess, never block the payment" philosophy as syncPaymentToMonday
+// — if this fails or can't find exactly one match, the payment itself is
+// completely unaffected. Staff can still see it succeeded in Stripe; it
+// just won't be reflected on the hub.
+async function findAndMarkLinkPaid(paymentIntent) {
+  const type = paymentIntent.metadata && paymentIntent.metadata.sunatto_payment_type;
+  const customerName = paymentIntent.metadata && paymentIntent.metadata.customer_name;
+  const jobAddress = paymentIntent.metadata && paymentIntent.metadata.job_address;
+  const baseAmountCents = paymentIntent.metadata && Number(paymentIntent.metadata.base_amount_cents);
+
+  if (!type || !customerName || !jobAddress || !baseAmountCents) {
+    console.warn('Payment-links hub: PaymentIntent missing metadata needed to match, skipping.');
+    return;
+  }
+
+  const targetName = normalizeForMatch(customerName);
+  const targetAddress = normalizeAddressForMatch(jobAddress);
+
+  const links = await loadLinks();
+  const candidates = links.filter((l) => {
+    if (l.paid || l.type !== type || l.amountCents !== baseAmountCents) return false;
+    const linkName = normalizeForMatch(l.customerName);
+    const linkAddress = normalizeAddressForMatch(l.jobAddress);
+    return linkName && linkAddress
+      && (linkName.includes(targetName) || targetName.includes(linkName))
+      && (linkAddress.includes(targetAddress) || targetAddress.includes(linkAddress));
+  });
+
+  if (candidates.length !== 1) {
+    console.warn(
+      `Payment-links hub: ${candidates.length} unpaid link(s) matched name="${customerName}" ` +
+      `address="${jobAddress}" type="${type}" amount=${baseAmountCents} for PaymentIntent ${paymentIntent.id} ` +
+      `— skipping to avoid marking the wrong one paid.`
+    );
+    return;
+  }
+
+  candidates[0].paid = true;
+  candidates[0].paidAt = new Date().toISOString();
+  candidates[0].paymentIntentId = paymentIntent.id;
+  await saveLinks(links);
+  console.log(`Payment-links hub: marked link ${candidates[0].id} paid for PaymentIntent ${paymentIntent.id}.`);
+}
 
 // Publishable key + Stripe account-level config the frontend needs.
 // mapboxAccessToken (optional) enables address autocomplete on

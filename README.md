@@ -4,13 +4,16 @@ Custom checkout for both the 20% deposit and the 80% final balance:
 ACH (bank debit) and debit cards have **no surcharge**. Credit cards get a
 **3% surcharge** (the US cap — see "Compliance" below).
 
-Two pages:
+Three pages:
 - `intake.html` — internal tool for sales reps. They fill in the customer's
   name, address, email, phone, and the **total project cost**; the page
   automatically computes the locked 20% or 80% amount and hands everything
   off to `checkout.html`.
 - `checkout.html` — the customer-facing payment page. One page/backend
   handles both payment types — which one is which is just a URL parameter.
+- `hub.html` — internal "Payment Links Hub" for staff to see every link
+  that's been sent out, whether it's been paid, and resend one if needed
+  (see "Payment Links Hub" below).
 
 ## Before you deploy
 
@@ -20,10 +23,11 @@ Two pages:
    this is safe before pointing this at real customers.
 2. **The surcharge logic has been tested end-to-end in Stripe test mode**
    (test cards, disclosure screen, and successful charge all confirmed
-   working). The **Monday.com sync has NOT been tested against the live
-   Monday API** — this was built in an environment that cannot reach
-   `api.monday.com`. Test it with one real payment against a real board item
-   before relying on it (see "Testing the Monday.com sync" below).
+   working). The **Monday.com sync, the Payment Links Hub, and address
+   autocomplete have NOT been tested against their respective live APIs**
+   — this was built in an environment that cannot reach `api.monday.com`,
+   Netlify Blobs, or Mapbox. Test each one for real before relying on it
+   (see each section below).
 
 ## Deploying to Netlify
 
@@ -36,19 +40,26 @@ Two pages:
    - `STRIPE_SECRET_KEY` — start with a test key (`sk_test_...`), switch to
      the live key (`sk_live_...`) only after testing is done.
    - `STRIPE_PUBLISHABLE_KEY` — matching `pk_test_...` or `pk_live_...`.
-   - `MONDAY_API_TOKEN` — optional, but required for the Monday.com sync
-     (see below). Without it, payments still work fine — the sync is
-     skipped silently and logged.
+   - `MONDAY_API_TOKEN` — required for both the Monday.com sync (see below)
+     **and** the Payment Links Hub (see below), since the hub reads the
+     Sunatto Pipeline 2026 board directly to decide who can see what.
+     Without it, payments still work fine — the sync is skipped silently
+     and logged, and the hub will show every logged-in person zero jobs.
    - `POSTMARK_SERVER_TOKEN` — optional, but required for the "Send to
-     Homeowner by Email" button (see "Send to Homeowner email" below).
-     Without it, payments/links still work fine — office staff just fall
-     back to the "Copy" link.
+     Homeowner by Email" button (see "Send to Homeowner email" below) and
+     the hub's "Resend" button. Without it, payments/links still work
+     fine — office staff just fall back to the "Copy" link.
    - `MAPBOX_ACCESS_TOKEN` — optional, enables address autocomplete on
      `intake.html`'s Address field (see "Address autocomplete" below).
      Without it, the Address field is just a plain text field like before.
 4. Deploy. Netlify gives you a URL like `https://your-site.netlify.app`.
    You can attach a custom domain (e.g. `pay.southernenergydistributors.com`)
    under Domain settings.
+
+No extra setup is needed for the Payment Links Hub's storage — it uses
+[Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/),
+which is built into every Netlify project automatically (no sign-up, no
+separate database, no extra environment variable).
 
 ## Sales rep workflow
 
@@ -72,6 +83,8 @@ Two pages:
    - **Copy** grabs a full link to text or email manually instead, for when
      `POSTMARK_SERVER_TOKEN` isn't set or the rep prefers to send it a
      different way.
+4. Whichever of those three actions is used, the link is also silently
+   recorded to the Payment Links Hub (`hub.html`) — see below.
 
 ## Building payment links directly (skipping the intake page)
 
@@ -85,7 +98,11 @@ https://your-site.netlify.app/checkout.html?type=balance&amount=18400.00&name=Ev
 Parameters:
 - `type` — `deposit` or `balance` (controls page title and Stripe metadata only; the surcharge logic is identical for both).
 - `amount` — the BASE amount in dollars, before any surcharge. If omitted, the customer is shown an editable "Amount" field instead of a locked one — normally you won't hit this if the link came from `intake.html`, since it always fills this in.
-- `name`, `email`, `phone`, `address` — all optional, used to pre-fill/create the Stripe customer and (if `MONDAY_API_TOKEN` is set) to match the payment back to the right Monday.com board item.
+- `name`, `email`, `phone`, `address` — all optional, used to pre-fill/create the Stripe customer and (if `MONDAY_API_TOKEN` is set) to match the payment back to the right Monday.com board item and to the Payment Links Hub.
+
+Links built this way (bypassing `intake.html`) are **not** recorded to the
+Payment Links Hub, since only `intake.js` calls `POST /api/links` — they'll
+still work fine for payment, just won't show up on `hub.html`.
 
 ## Local development / testing
 
@@ -108,6 +125,11 @@ Confirm in each case that the breakdown screen shows the right numbers
 *before* the payment is confirmed, and that the final charged amount in the
 Stripe test dashboard matches what was shown to the "customer."
 
+Note: Netlify Blobs (used by the Payment Links Hub) generally needs either
+`netlify dev` (instead of `npm start`) or a deployed Netlify environment to
+work — plain `node server.js` locally may not have Blobs access. The hub's
+core payment-link recording will still work everywhere else either way.
+
 ## How the surcharge is actually calculated (technical)
 
 This uses Stripe's surcharge feature, which is in **public preview**
@@ -117,10 +139,10 @@ This uses Stripe's surcharge feature, which is in **public preview**
 2. The customer fills in the Stripe Payment Element on the page and clicks Continue. The frontend calls `stripe.elements({..., paymentMethodCreation: 'manual'})` and then `stripe.createPaymentMethod` to tokenize their payment method *without* confirming yet. (The `paymentMethodCreation: 'manual'` flag is required — without it, Stripe throws an IntegrationError on `createPaymentMethod` that silently breaks the flow.)
 3. `POST /api/payment-method-info` looks up that payment method's type/funding (`credit`, `debit`, `prepaid`, or bank account) and calculates the surcharge (3% if — and only if — it's a credit card).
 4. The customer sees a breakdown (subtotal, surcharge if any, total) and must explicitly click "Confirm and Pay" — or back out and pick a different payment method. This disclosure-before-charging step is a hard requirement from Stripe/card network rules, not optional UX.
-5. `POST /api/finalize` updates the PaymentIntent's amount and `amount_details.surcharge` fields, confirms it, and responds to the customer immediately. If the payment succeeded, it *then* (fire-and-forget, after the response is already sent) tries to sync the result to Monday.com.
+5. `POST /api/finalize` updates the PaymentIntent's amount and `amount_details.surcharge` fields, confirms it, and responds to the customer immediately. If the payment succeeded, it *then* (fire-and-forget, after the response is already sent) tries to sync the result to Monday.com and to mark the matching Payment Links Hub record "paid" (see below).
 6. If the card requires extra authentication (3D Secure), the frontend handles that via `stripe.handleNextAction`.
 
-## Monday.com sync (new)
+## Monday.com sync (existing)
 
 When a payment succeeds, `server.js` tries to:
 
@@ -156,7 +178,102 @@ original Stripe surcharge code before it was tested. Before trusting it:
    expected — every failure is logged with the reason (no match, multiple
    matches, missing token, or an API error).
 
-## Send to Homeowner email (new)
+## Payment Links Hub (new)
+
+`hub.html` gives staff one place to see every link `intake.html` has
+generated, whether it's been paid, and a "Resend" button — instead of
+digging back through old texts/emails to figure out what's outstanding.
+
+### How it works
+
+- **Recording links.** Every time a rep uses Copy Link, Send Email, or
+  Continue to Payment on `intake.html`, the job's details are silently
+  recorded (`POST /api/links`) to a small JSON store in
+  [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/)
+  — no extra sign-up, it's built into this same Netlify project.
+- **Marking links paid.** After a payment succeeds, `server.js`
+  (`findAndMarkLinkPaid`) tries to match it — by customer name, address,
+  type, and base amount, same fuzzy matching as the Monday sync — to
+  exactly one unpaid link record, and marks it paid. If it can't find
+  exactly one confident match, it does nothing and logs why; this never
+  affects the payment itself.
+- **Who can see what.** This is the important part: **visibility on the
+  hub is 100% driven by the "Sunatto Pipeline 2026" Monday board**, not by
+  any separate role/permission you have to maintain. When someone logs
+  into the hub, the server looks up every board item where that person's
+  name appears in the **Sales Rep**, **Office**, or **Manager** column
+  (all three checked the same way), and shows only the payment links whose
+  customer name + address match one of those jobs. In practice, Office and
+  Manager tend to be the same handful of people attached to nearly every
+  job, so they naturally end up seeing most/all jobs — Sales Reps see just
+  their own. There's no separate "admin" flag to manage: add or remove
+  someone from a job in Monday, and their hub visibility updates
+  automatically next time they load the page.
+
+### Logging in
+
+There's no email/password account system — just first/last name + a PIN:
+
+1. **First visit (on any device):** enter your first and last name. If
+   that's a name the hub hasn't seen before, it asks you to create a 4-6
+   digit PIN.
+2. **Returning to the same device:** the name is remembered in the
+   browser's local storage, so you'll just see "Welcome back, \[name]" and
+   a PIN field — no need to retype your name. Use **"Not you? Switch
+   user"** if a different person is using this device (e.g. a shared
+   office computer).
+3. **New browser session, same device:** the actual login session clears
+   whenever the browser/tab fully closes, so you'll be asked for your PIN
+   again next time you open the page — but again, not your name, since
+   that part's remembered.
+
+### Getting set up
+
+Nothing extra beyond what's already needed for the Monday.com sync above —
+the hub reuses the same `MONDAY_API_TOKEN` to read the Sales Rep / Office /
+Manager columns. Just make sure whoever's using the hub has their name
+entered in Monday **exactly (or close to) how they'll type it when logging
+in** — matching is fuzzy (case/punctuation-insensitive, substring-based)
+but it's still name-text matching, not a hard user ID link.
+
+### Testing the Payment Links Hub
+
+This has **not** been tested against the real Netlify Blobs or Monday APIs
+— same sandbox limitation as everything else above. Before trusting it:
+
+1. Send a test link to yourself from `intake.html`, then open `hub.html`,
+   create an account under your own name, and confirm the link shows up
+   (it will only show up if your name is in the Sales Rep, Office, or
+   Manager column of a Monday item matching that job's name + address).
+2. Make a real test payment against that link and confirm it flips to
+   "Paid" on the hub.
+3. Try **Resend** and confirm the homeowner actually gets a second email.
+4. Log in as someone attached to a *different* job (or a made-up name with
+   no jobs) and confirm they do **not** see links that aren't theirs.
+5. Check the Netlify function logs (Project → Logs → Functions) for
+   `hub/`, `create link`, `list links`, or `resend link` errors if
+   anything doesn't behave as expected.
+
+### Known limitations (read before relying on this for real access control)
+
+- **PINs are a low-security convenience, not a strong credential.** A 4-6
+  digit PIN is guessable with enough attempts; there's currently no
+  rate-limiting or lockout on `/api/hub/login`. This is fine for an
+  internal tool among trusted staff, but don't treat it as a strong
+  security boundary.
+- **No self-serve PIN reset.** If someone forgets their PIN, the only fix
+  right now is deleting their record directly from the
+  `sunatto-hub-users` Netlify Blobs store (Netlify dashboard → your site →
+  Blobs) so they can re-create an account under the same name.
+- **Name matching is fuzzy, not exact.** "Chris Beggs" logging in won't
+  match a Monday job assigned to "Christopher Beggs" unless one name is a
+  substring of the other after normalizing. Encourage people to log in
+  using their name close to however it appears on the Monday board.
+- **One active session per person.** Logging in on a new device rotates
+  that person's session token, which signs them out of any other device
+  still using the old one.
+
+## Send to Homeowner email (existing)
 
 `intake.html` can automatically email the payment link to the homeowner
 instead of the rep having to copy/paste it, using
@@ -172,6 +289,8 @@ instead of the rep having to copy/paste it, using
 - If `POSTMARK_SERVER_TOKEN` isn't set, or the Postmark API call fails for
   any reason, the button shows an error and the rep can fall back to the
   "Copy" link — this never blocks or breaks the rest of the intake flow.
+- The same underlying send logic also powers the Payment Links Hub's
+  "Resend" button (see above).
 
 ### Getting a Postmark server token
 
@@ -204,7 +323,7 @@ reach `api.postmarkapp.com` either). Before trusting it:
 4. Check the Netlify function logs (Project → Logs → Functions) for any
    `send-homeowner-email` errors if the button reports a failure.
 
-## Address autocomplete (new)
+## Address autocomplete (existing)
 
 `intake.html`'s Address field uses [Mapbox's Search Box
 API](https://docs.mapbox.com/api/search/search-box/) for address
@@ -243,10 +362,11 @@ the Address field just stays a plain text field with no suggestions.
 
 ## Known gaps / follow-ups
 
-- No sales-rep attribution yet — payments aren't tagged to a specific rep. Easy to add later as a field on `intake.html` plus a metadata field, if commission tracking becomes a priority.
-- The Monday.com sync only fires on a *successful* payment through this page. If a rep fills out `intake.html` and the homeowner never completes the payment, there's currently no record of that anywhere (no different from before this build existed, but worth knowing).
+- No sales-rep attribution on the *payment* itself yet — Stripe metadata isn't tagged to a specific rep (the Payment Links Hub now covers "who can see this job," which is different from "who gets commission credit"). Easy to add later as a field on `intake.html` plus a metadata field, if commission tracking becomes a priority.
+- The Monday.com sync and Payment Links Hub "paid" status only fire on a *successful* payment through this page. If a rep sends a link and the homeowner never completes the payment, it will just sit as "Unpaid" on the hub indefinitely (which is the intended behavior — that's the point of the hub) but there's no reminder/nudge automation yet.
 - No admin UI for reviewing past payments outside of Stripe's own dashboard.
 - Monday.com sync is untested against the live API (see above) — verify with one real transaction before relying on it.
 - Send to Homeowner email is untested against the live Postmark API (see above) — send yourself a real test email before relying on it.
 - DMARC isn't set up yet for `quotes.southernenergydistributors.com` (Postmark flags this) — worth adding once the domain has a bit of real sending history, for better inbox placement.
 - Address autocomplete (Mapbox) is untested against the live Mapbox API — verify once `MAPBOX_ACCESS_TOKEN` is set that suggestions actually appear while typing in `intake.html`'s Address field.
+- Payment Links Hub is untested against live Netlify Blobs/Monday (see "Testing the Payment Links Hub" above) — PINs have no rate-limiting/lockout and no self-serve reset yet (see "Known limitations" above).
