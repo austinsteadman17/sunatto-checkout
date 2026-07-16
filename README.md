@@ -52,14 +52,20 @@ Three pages:
    - `MAPBOX_ACCESS_TOKEN` — optional, enables address autocomplete on
      `intake.html`'s Address field (see "Address autocomplete" below).
      Without it, the Address field is just a plain text field like before.
+   - `NETLIFY_BLOBS_TOKEN` — required for `/hub.html` to actually work
+     (see "Payment Links Hub" below for why and how to get one). Without
+     it, the hub shows an error instead of the login screen.
 4. Deploy. Netlify gives you a URL like `https://your-site.netlify.app`.
    You can attach a custom domain (e.g. `pay.southernenergydistributors.com`)
    under Domain settings.
 
-No extra setup is needed for the Payment Links Hub's storage — it uses
+The Payment Links Hub's storage uses
 [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/),
-which is built into every Netlify project automatically (no sign-up, no
-separate database, no extra environment variable).
+which is built into every Netlify project (no separate database to stand
+up) — but it does need one manual token, `NETLIFY_BLOBS_TOKEN` (see below),
+because this project's Express server runs inside a Netlify Function via
+`serverless-http`, and Blobs' normal zero-configuration auto-detection
+doesn't reach through that wrapper.
 
 ## Sales rep workflow
 
@@ -229,12 +235,28 @@ There's no email/password account system — just first/last name + a PIN:
 
 ### Getting set up
 
-Nothing extra beyond what's already needed for the Monday.com sync above —
-the hub reuses the same `MONDAY_API_TOKEN` to read the Sales Rep / Office /
-Manager columns. Just make sure whoever's using the hub has their name
-entered in Monday **exactly (or close to) how they'll type it when logging
-in** — matching is fuzzy (case/punctuation-insensitive, substring-based)
-but it's still name-text matching, not a hard user ID link.
+Two things beyond what's already needed for the Monday.com sync above:
+
+1. **`NETLIFY_BLOBS_TOKEN`** — Netlify Blobs (used to store links and user
+   accounts) is supposed to configure itself automatically with zero setup
+   inside any Netlify Function, but that auto-detection doesn't reach
+   through this project's `serverless-http` wrapper (see
+   `netlify/functions/api.js`) — without this token, `/hub.html` shows
+   "The environment has not been configured to use Netlify Blobs" instead
+   of the login screen. To fix it:
+   1. In Netlify, go to your **User settings** (click your avatar, top
+      right) → **Applications** → **Personal access tokens** → **New
+      access token**.
+   2. Give it a name (e.g. "Sunatto Blobs") and generate it.
+   3. Add it to this site as `NETLIFY_BLOBS_TOKEN`.
+   No other configuration is needed — `SITE_ID` (the other piece Blobs
+   needs) is already set automatically by Netlify in every Function.
+2. **`MONDAY_API_TOKEN`** (same one as the Monday.com sync) — the hub
+   reuses it to read the Sales Rep / Office / Manager columns. Just make
+   sure whoever's using the hub has their name entered in Monday
+   **exactly (or close to) how they'll type it when logging in** —
+   matching is fuzzy (case/punctuation-insensitive, substring-based) but
+   it's still name-text matching, not a hard user ID link.
 
 ### Testing the Payment Links Hub
 

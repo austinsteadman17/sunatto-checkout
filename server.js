@@ -665,25 +665,41 @@ const MONDAY_SALES_REP_COLUMN_ID = 'multiple_person_mkrwz37g';
 const MONDAY_OFFICE_COLUMN_ID = 'multiple_person_mksd8yte';
 const MONDAY_MANAGER_COLUMN_ID = 'multiple_person_mkrwcp2r';
 
+// @netlify/blobs is supposed to auto-detect the site/credentials when
+// called from inside a Netlify Function with zero configuration — but
+// that auto-detection doesn't reach in through serverless-http's
+// Express-style wrapping (see netlify/functions/api.js), so `getStore()`
+// on its own throws "The environment has not been configured to use
+// Netlify Blobs" here. Falling back to explicit manual configuration
+// (Netlify's own documented escape hatch) fixes it: SITE_ID is set
+// automatically in every Netlify Function regardless of bundler, and
+// NETLIFY_BLOBS_TOKEN is a personal access token you create once — see
+// README.md's "Payment Links Hub" section for how to get one.
+function blobStore(name) {
+  const siteID = process.env.SITE_ID;
+  const token = process.env.NETLIFY_BLOBS_TOKEN;
+  return (siteID && token) ? getStore({ name, siteID, token }) : getStore(name);
+}
+
 async function loadLinks() {
-  const store = getStore(LINKS_STORE_NAME);
+  const store = blobStore(LINKS_STORE_NAME);
   const data = await store.get(LINKS_BLOB_KEY, { type: 'json' });
   return Array.isArray(data) ? data : [];
 }
 
 async function saveLinks(links) {
-  const store = getStore(LINKS_STORE_NAME);
+  const store = blobStore(LINKS_STORE_NAME);
   await store.setJSON(LINKS_BLOB_KEY, links);
 }
 
 async function loadUsers() {
-  const store = getStore(USERS_STORE_NAME);
+  const store = blobStore(USERS_STORE_NAME);
   const data = await store.get(USERS_BLOB_KEY, { type: 'json' });
   return Array.isArray(data) ? data : [];
 }
 
 async function saveUsers(users) {
-  const store = getStore(USERS_STORE_NAME);
+  const store = blobStore(USERS_STORE_NAME);
   await store.setJSON(USERS_BLOB_KEY, users);
 }
 
