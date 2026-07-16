@@ -607,8 +607,16 @@ app.post('/api/send-homeowner-email', async (req, res) => {
 });
 
 // Publishable key + Stripe account-level config the frontend needs.
+// radarPublishableKey (optional) enables address autocomplete on
+// intake.html — it's a Radar *publishable* key, meant to be used
+// client-side (same trust model as the Stripe publishable key above), so
+// serving it here is fine. Without it, the address field just stays a
+// plain text field.
 app.get('/api/config', (req, res) => {
-  res.json({ publishableKey: process.env.STRIPE_PUBLISHABLE_KEY });
+  res.json({
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
+    radarPublishableKey: process.env.RADAR_PUBLISHABLE_KEY || null,
+  });
 });
 
 // Run standalone with `node server.js` for local dev. When deployed to

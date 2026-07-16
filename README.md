@@ -43,6 +43,9 @@ Two pages:
      Homeowner by Email" button (see "Send to Homeowner email" below).
      Without it, payments/links still work fine — office staff just fall
      back to the "Copy" link.
+   - `RADAR_PUBLISHABLE_KEY` — optional, enables address autocomplete on
+     `intake.html`'s Address field (see "Address autocomplete" below).
+     Without it, the Address field is just a plain text field like before.
 4. Deploy. Netlify gives you a URL like `https://your-site.netlify.app`.
    You can attach a custom domain (e.g. `pay.southernenergydistributors.com`)
    under Domain settings.
@@ -201,6 +204,31 @@ reach `api.postmarkapp.com` either). Before trusting it:
 4. Check the Netlify function logs (Project → Logs → Functions) for any
    `send-homeowner-email` errors if the button reports a failure.
 
+## Address autocomplete (new)
+
+`intake.html`'s Address field uses [Radar](https://radar.com) for address
+autocomplete (chosen because it's genuinely free to start — no credit card
+required, 100,000 free autocomplete requests/month). The "Total project
+cost" field (and the manual amount field on `checkout.html`, if a link is
+opened without a locked amount) also now auto-format with commas as you
+type, e.g. typing `18500` shows `18,500`.
+
+### Getting a Radar publishable key
+
+1. [Sign up](https://radar.com/signup) for a free Radar account (no credit
+   card needed).
+2. In the Radar dashboard, go to **Settings → API Keys** and copy the
+   **Publishable key** (starts with `prj_live_pk_...` for production, or
+   `prj_test_pk_...` for testing).
+3. Add it to Netlify as `RADAR_PUBLISHABLE_KEY`.
+
+This key is meant to be used directly in the browser (same trust model as
+Stripe's publishable key) — it's not a secret, so there's no security risk
+in it being visible in the page's network requests.
+
+If this variable isn't set, `intake.html` still works exactly as before —
+the Address field just stays a plain text field with no suggestions.
+
 ## Compliance notes (read this)
 
 - **3% is the real US cap** once you accept both Visa and Mastercard (Visa allows up to 3%, Mastercard up to 4% — you're bound by the lower one). Don't raise this rate without re-checking current network rules.
@@ -216,3 +244,4 @@ reach `api.postmarkapp.com` either). Before trusting it:
 - Monday.com sync is untested against the live API (see above) — verify with one real transaction before relying on it.
 - Send to Homeowner email is untested against the live Postmark API (see above) — send yourself a real test email before relying on it.
 - DMARC isn't set up yet for `quotes.southernenergydistributors.com` (Postmark flags this) — worth adding once the domain has a bit of real sending history, for better inbox placement.
+- Address autocomplete (Radar) is untested against the live Radar API — verify once `RADAR_PUBLISHABLE_KEY` is set that suggestions actually appear while typing in `intake.html`'s Address field.
