@@ -10,6 +10,8 @@ const params = new URLSearchParams(window.location.search);
 const TYPE = params.get('type') === 'balance' ? 'balance' : 'deposit';
 const CUSTOMER_NAME = params.get('name') || '';
 const CUSTOMER_EMAIL = params.get('email') || '';
+const CUSTOMER_PHONE = params.get('phone') || '';
+const JOB_ADDRESS = params.get('address') || '';
 
 const URL_AMOUNT_DOLLARS = parseFloat(params.get('amount') || '0');
 const AMOUNT_LOCKED = URL_AMOUNT_DOLLARS > 0;
@@ -23,7 +25,7 @@ function fmt(cents) {
 document.getElementById('page-eyebrow').textContent =
   TYPE === 'deposit' ? '20% Deposit' : 'Final Balance (80%)';
 document.getElementById('page-subtitle').textContent =
-  `Southern Energy Distributors LLC${CUSTOMER_NAME ? ' — ' + CUSTOMER_NAME : ''}`;
+  `Southern Energy Distributors LLC${CUSTOMER_NAME ? ' — ' + CUSTOMER_NAME : ''}${JOB_ADDRESS ? ' · ' + JOB_ADDRESS : ''}`;
 
 document.getElementById('footnote').textContent =
   TYPE === 'deposit'
@@ -114,6 +116,8 @@ async function init() {
       type: TYPE,
       customerName: CUSTOMER_NAME,
       customerEmail: CUSTOMER_EMAIL,
+      customerPhone: CUSTOMER_PHONE,
+      jobAddress: JOB_ADDRESS,
     }),
   });
   const intentData = await intentRes.json();

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Southern Energy Distributors — New Payment</title>
+<style>
+  :root {
+    --black: #16171B;
+    --soft-black: #0A0A0A;
+    --white: #FFFFFF;
+    --background: #FAFAF9;
+
+    --gray-50: #FAFAFA;
+    --gray-100: #F5F5F4;
+    --gray-150: #E3E3E6;
+    --gray-200: #DFE1E6;
+    --gray-300: #C9CBD2;
+    --gray-400: #9AA5B1;
+    --gray-500: #7D818A;
+    --gray-600: #5B5E66;
+    --gray-700: #454952;
+    --gray-800: #232323;
+
+    --gold: #F2A900;
+    --gold-dark: #C98A0A;
+    --gold-light: #FDF3D6;
+
+    --green: #1A9A5B;
+    --green-light: #E8F7EF;
+
+    --red: #C0392B;
+    --red-light: #FDECEA;
+
+    --sp-1: 8px;
+    --sp-2: 12px;
+    --sp-3: 16px;
+    --sp-4: 20px;
+    --sp-5: 24px;
+    --sp-6: 32px;
+    --sp-7: 40px;
+
+    --radius-sm: 10px;
+    --radius-lg: 16px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--background);
+    margin: 0;
+    padding: var(--sp-7) var(--sp-3);
+    color: var(--black);
+    font-size: 14px;
+  }
+
+  .wrap { max-width: 480px; margin: 0 auto; }
+
+  .brand { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-5); justify-content: center; }
+  .brand img { height: 28px; width: auto; display: block; }
+  .brand span { font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--gray-700); }
+
+  .card {
+    background: var(--white);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-6);
+  }
+
+  .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--gray-500); margin-bottom: var(--sp-1); }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 4px 0; color: var(--black); }
+  .subtitle { color: var(--gray-600); font-size: 13px; margin-bottom: var(--sp-5); }
+
+  .type-toggle {
+    display: flex;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 3px;
+    margin-bottom: var(--sp-5);
+    background: var(--gray-50);
+  }
+  .type-toggle button {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--gray-600);
+    cursor: pointer;
+  }
+  .type-toggle button.active {
+    background: var(--black);
+    color: var(--white);
+  }
+
+  label.field-label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    color: var(--gray-500);
+    margin-bottom: 6px;
+    margin-top: var(--sp-3);
+  }
+  label.field-label:first-of-type { margin-top: 0; }
+
+  input.field-input {
+    width: 100%;
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--black);
+    font-family: inherit;
+  }
+  input.field-input:focus { outline: none; border-color: var(--gray-400); }
+
+  .amount-input-group { position: relative; }
+  .amount-input-group .prefix {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--gray-500);
+    font-size: 14px;
+    pointer-events: none;
+  }
+  .amount-input-group input.field-input { padding-left: 26px; }
+
+  .locked-amount {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin-top: var(--sp-3);
+  }
+  .locked-amount .label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gray-500); }
+  .locked-amount .value { font-size: 18px; font-weight: 700; color: var(--black); }
+
+  button.primary {
+    width: 100%;
+    padding: 11px;
+    border-radius: var(--radius-sm);
+    border: none;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: var(--sp-5);
+    font-family: inherit;
+    background: var(--black);
+    color: var(--white);
+    transition: transform 0.05s ease;
+  }
+  button.primary:active { transform: scale(0.97); }
+  button.primary:disabled { background: var(--gray-300); cursor: not-allowed; }
+
+  .link-block {
+    display: none;
+    margin-top: var(--sp-3);
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-3);
+  }
+  .link-block .field-label { margin-top: 0; }
+  .link-row { display: flex; gap: 8px; }
+  .link-row input.field-input { background: var(--white); font-size: 12px; color: var(--gray-600); }
+  button.copy-button {
+    flex-shrink: 0;
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--black);
+    cursor: pointer;
+  }
+  button.copy-button:active { transform: scale(0.97); }
+
+  .error-message {
+    color: var(--red);
+    font-size: 13px;
+    margin-top: var(--sp-2);
+    border-radius: var(--radius-sm);
+  }
+  .error-message:not(:empty) {
+    background: var(--red-light);
+    padding: 10px 12px;
+  }
+
+  .footnote {
+    font-size: 12px;
+    color: var(--gray-500);
+    text-align: center;
+    line-height: 1.5;
+    margin-top: var(--sp-5);
+    padding: 0 var(--sp-2);
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">New Payment</div>
+      <h1>Job Details</h1>
+      <div class="subtitle">Fill this out, then hand the device to the homeowner or send them the link.</div>
+
+      <div class="type-toggle">
+        <button type="button" id="type-deposit-btn" class="active">20% Deposit</button>
+        <button type="button" id="type-balance-btn">80% Balance</button>
+      </div>
+
+      <label class="field-label" for="customer-name">Customer full name</label>
+      <input type="text" id="customer-name" class="field-input" placeholder="Jane Homeowner" />
+
+      <label class="field-label" for="customer-address">Address</label>
+      <input type="text" id="customer-address" class="field-input" placeholder="123 Main St, Del Rio, TX" />
+
+      <label class="field-label" for="customer-email">Email</label>
+      <input type="email" id="customer-email" class="field-input" placeholder="jane@example.com" />
+
+      <label class="field-label" for="customer-phone">Phone number</label>
+      <input type="tel" id="customer-phone" class="field-input" placeholder="(210) 555-0123" />
+
+      <label class="field-label" for="total-cost">Total project cost</label>
+      <div class="amount-input-group">
+        <span class="prefix">$</span>
+        <input type="text" inputmode="decimal" id="total-cost" class="field-input" placeholder="0.00" />
+      </div>
+
+      <div class="locked-amount">
+        <span class="label">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          <span id="amount-due-caption">Amount due (20%)</span>
+        </span>
+        <span class="value" id="amount-due-value">$0.00</span>
+      </div>
+
+      <div class="error-message" id="error-message"></div>
+
+      <button type="button" class="primary" id="continue-button" disabled>Continue to Payment</button>
+
+      <div class="link-block" id="link-block">
+        <label class="field-label">Or send this link to the homeowner</label>
+        <div class="link-row">
+          <input type="text" id="generated-link" class="field-input" readonly />
+          <button type="button" class="copy-button" id="copy-link-button">Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="footnote">Internal tool for Southern Energy Distributors sales reps. Information entered here is passed to the customer's payment page and is not shown publicly.</div>
+  </div>
+
+  <script src="intake.js"></script>
+</body>
+</html>

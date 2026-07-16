@@ -1,0 +1,120 @@
+// Sales rep intake page. Collects job details, computes the locked 20%/80%
+// amount from the total project cost, and hands everything off to
+// checkout.html via URL parameters — either by navigating there directly
+// (same device, rep hands the phone/laptop to the homeowner) or by copying
+// a link to text/email to the homeowner.
+//
+// Example resulting link:
+//   /checkout.html?type=deposit&amount=4600.00&name=Jane+Homeowner&email=jane%40example.com&phone=2105550123&address=123+Main+St%2C+Del+Rio%2C+TX
+
+const params = new URLSearchParams(window.location.search);
+let TYPE = params.get('type') === 'balance' ? 'balance' : 'deposit';
+
+const typeDepositBtn = document.getElementById('type-deposit-btn');
+const typeBalanceBtn = document.getElementById('type-balance-btn');
+const nameField = document.getElementById('customer-name');
+const addressField = document.getElementById('customer-address');
+const emailField = document.getElementById('customer-email');
+const phoneField = document.getElementById('customer-phone');
+const totalCostField = document.getElementById('total-cost');
+const amountDueCaption = document.getElementById('amount-due-caption');
+const amountDueValue = document.getElementById('amount-due-value');
+const errorEl = document.getElementById('error-message');
+const continueButton = document.getElementById('continue-button');
+const linkBlock = document.getElementById('link-block');
+const generatedLinkField = document.getElementById('generated-link');
+const copyLinkButton = document.getElementById('copy-link-button');
+
+function fmt(cents) {
+  return '$' + (cents / 100).toFixed(2);
+}
+
+function setType(type) {
+  TYPE = type;
+  typeDepositBtn.classList.toggle('active', type === 'deposit');
+  typeBalanceBtn.classList.toggle('active', type === 'balance');
+  amountDueCaption.textContent = type === 'deposit' ? 'Amount due (20%)' : 'Amount due (80%)';
+  recompute();
+}
+
+typeDepositBtn.addEventListener('click', () => setType('deposit'));
+typeBalanceBtn.addEventListener('click', () => setType('balance'));
+
+function currentAmountCents() {
+  const total = parseFloat((totalCostField.value || '').replace(/,/g, ''));
+  if (!total || total <= 0) return 0;
+  const rate = TYPE === 'deposit' ? 0.2 : 0.8;
+  return Math.round(total * rate * 100);
+}
+
+function recompute() {
+  const cents = currentAmountCents();
+  amountDueValue.textContent = fmt(cents);
+  updateContinueState();
+}
+
+function updateContinueState() {
+  const name = nameField.value.trim();
+  const address = addressField.value.trim();
+  const cents = currentAmountCents();
+  const ready = name.length > 0 && address.length > 0 && cents > 0;
+  continueButton.disabled = !ready;
+
+  if (ready) {
+    generatedLinkField.value = buildCheckoutUrl();
+    linkBlock.style.display = 'block';
+  } else {
+    linkBlock.style.display = 'none';
+  }
+}
+
+function buildCheckoutUrl() {
+  const cents = currentAmountCents();
+  const dollars = (cents / 100).toFixed(2);
+
+  const out = new URLSearchParams();
+  out.set('type', TYPE);
+  out.set('amount', dollars);
+  if (nameField.value.trim()) out.set('name', nameField.value.trim());
+  if (emailField.value.trim()) out.set('email', emailField.value.trim());
+  if (phoneField.value.trim()) out.set('phone', phoneField.value.trim());
+  if (addressField.value.trim()) out.set('address', addressField.value.trim());
+
+  return `${window.location.origin}/checkout.html?${out.toString()}`;
+}
+
+totalCostField.addEventListener('input', () => {
+  errorEl.textContent = '';
+  recompute();
+});
+nameField.addEventListener('input', () => {
+  errorEl.textContent = '';
+  updateContinueState();
+});
+addressField.addEventListener('input', () => {
+  errorEl.textContent = '';
+  updateContinueState();
+});
+emailField.addEventListener('input', updateContinueState);
+phoneField.addEventListener('input', updateContinueState);
+
+continueButton.addEventListener('click', () => {
+  if (continueButton.disabled) return;
+  window.location.href = buildCheckoutUrl();
+});
+
+copyLinkButton.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(generatedLinkField.value);
+    const original = copyLinkButton.textContent;
+    copyLinkButton.textContent = 'Copied';
+    setTimeout(() => { copyLinkButton.textContent = original; }, 1500);
+  } catch (err) {
+    // Clipboard API can fail in some contexts (e.g. non-HTTPS, older
+    // browsers) — fall back to manual copy via text selection.
+    generatedLinkField.select();
+    errorEl.textContent = 'Could not copy automatically — link is selected, use Cmd/Ctrl+C.';
+  }
+});
+
+setType(TYPE);
