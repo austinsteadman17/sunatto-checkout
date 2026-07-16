@@ -20,7 +20,9 @@ const totalCostField = document.getElementById('total-cost');
 const amountDueCaption = document.getElementById('amount-due-caption');
 const amountDueValue = document.getElementById('amount-due-value');
 const errorEl = document.getElementById('error-message');
+const successEl = document.getElementById('success-message');
 const continueButton = document.getElementById('continue-button');
+const sendEmailButton = document.getElementById('send-email-button');
 const linkBlock = document.getElementById('link-block');
 const generatedLinkField = document.getElementById('generated-link');
 const copyLinkButton = document.getElementById('copy-link-button');
@@ -56,9 +58,12 @@ function recompute() {
 function updateContinueState() {
   const name = nameField.value.trim();
   const address = addressField.value.trim();
+  const email = emailField.value.trim();
   const cents = currentAmountCents();
   const ready = name.length > 0 && address.length > 0 && cents > 0;
   continueButton.disabled = !ready;
+  // Sending an email additionally requires a plausible email address.
+  sendEmailButton.disabled = !ready || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   if (ready) {
     generatedLinkField.value = buildCheckoutUrl();
@@ -85,22 +90,65 @@ function buildCheckoutUrl() {
 
 totalCostField.addEventListener('input', () => {
   errorEl.textContent = '';
+  successEl.textContent = '';
   recompute();
 });
 nameField.addEventListener('input', () => {
   errorEl.textContent = '';
+  successEl.textContent = '';
   updateContinueState();
 });
 addressField.addEventListener('input', () => {
   errorEl.textContent = '';
+  successEl.textContent = '';
   updateContinueState();
 });
-emailField.addEventListener('input', updateContinueState);
+emailField.addEventListener('input', () => {
+  errorEl.textContent = '';
+  successEl.textContent = '';
+  updateContinueState();
+});
 phoneField.addEventListener('input', updateContinueState);
 
 continueButton.addEventListener('click', () => {
   if (continueButton.disabled) return;
   window.location.href = buildCheckoutUrl();
+});
+
+sendEmailButton.addEventListener('click', async () => {
+  if (sendEmailButton.disabled) return;
+
+  errorEl.textContent = '';
+  successEl.textContent = '';
+  const originalLabel = sendEmailButton.textContent;
+  sendEmailButton.textContent = 'Sending…';
+  sendEmailButton.disabled = true;
+
+  try {
+    const cents = currentAmountCents();
+    const response = await fetch('/api/send-homeowner-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerName: nameField.value.trim(),
+        customerEmail: emailField.value.trim(),
+        jobAddress: addressField.value.trim(),
+        type: TYPE,
+        amount: (cents / 100).toFixed(2),
+        checkoutUrl: buildCheckoutUrl(),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Something went wrong sending the email.');
+    }
+    successEl.textContent = `Sent to ${emailField.value.trim()}.`;
+  } catch (err) {
+    errorEl.textContent = 'Could not send email (' + err.message + '). You can still copy the link above.';
+  } finally {
+    sendEmailButton.textContent = originalLabel;
+    updateContinueState();
+  }
 });
 
 copyLinkButton.addEventListener('click', async () => {
