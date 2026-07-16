@@ -245,7 +245,118 @@
     padding: 0 var(--sp-2);
   }
 
-  #hub-view { display: none; }
+  #hub-view, #generate-view { display: none; }
+
+  /* --- Generate Payment Link view --- */
+  .job-picker-list {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    margin-top: var(--sp-2);
+  }
+  .job-picker-row {
+    padding: 12px 14px;
+    cursor: pointer;
+  }
+  .job-picker-row:hover { background: var(--gray-50); }
+  .job-picker-row + .job-picker-row { border-top: 1px solid var(--gray-100); }
+  .job-picker-empty {
+    text-align: center;
+    padding: var(--sp-6) var(--sp-3);
+    color: var(--gray-500);
+    font-size: 13px;
+  }
+
+  .selected-job-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin-bottom: var(--sp-4);
+  }
+
+  .type-toggle {
+    display: flex;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 3px;
+    margin-bottom: var(--sp-4);
+    background: var(--gray-50);
+  }
+  .type-toggle button {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--gray-600);
+    cursor: pointer;
+  }
+  .type-toggle button.active { background: var(--black); color: var(--white); }
+
+  .amount-input-group { position: relative; }
+  .amount-input-group .prefix {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--gray-500);
+    font-size: 14px;
+    pointer-events: none;
+  }
+  .amount-input-group input.field-input { padding-left: 26px; }
+
+  .locked-amount {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    margin-top: var(--sp-3);
+    margin-bottom: var(--sp-3);
+  }
+  .locked-amount .value { font-size: 18px; font-weight: 700; color: var(--black); }
+
+  .success-message {
+    color: var(--green);
+    font-size: 13px;
+    margin-top: var(--sp-2);
+    border-radius: var(--radius-sm);
+  }
+  .success-message:not(:empty) { background: var(--green-light); padding: 10px 12px; }
+
+  .link-block {
+    display: none;
+    margin-top: var(--sp-3);
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-3);
+  }
+  .link-block .field-label { margin-top: 0; }
+  .link-row { display: flex; gap: 8px; }
+  .link-row input.field-input { background: var(--white); font-size: 12px; color: var(--gray-600); }
+  button.copy-button {
+    flex-shrink: 0;
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--black);
+    cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -309,6 +420,7 @@
           <div class="user-info">
             Logged in as <strong id="current-user-name"></strong> · <button type="button" class="link-button" id="logout-button">Log out</button>
           </div>
+          <button type="button" class="secondary" id="generate-link-button">+ Generate Link</button>
           <button type="button" class="secondary" id="refresh-button">Refresh</button>
         </div>
       </div>
@@ -327,6 +439,79 @@
     </div>
 
     <div class="footnote">Internal tool for Southern Energy Distributors staff. Visibility here is based on the Sales Rep / Office / Manager columns on the Sunatto Pipeline 2026 Monday board.</div>
+  </div>
+
+  <div class="wrap narrow" id="generate-view">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+
+    <div class="card">
+      <div class="eyebrow">Payment Links Hub</div>
+      <h1>Generate Payment Link</h1>
+      <div class="subtitle" id="generate-subtitle">Pick a job you're attached to on the Monday board.</div>
+
+      <!-- Step 1: pick a job (only ones this user can see) -->
+      <div id="job-picker-step">
+        <input type="text" id="job-search-input" class="field-input" placeholder="Search by customer name or address…" />
+        <div class="job-picker-list" id="job-picker-list"></div>
+      </div>
+
+      <!-- Step 2: confirm/edit details and generate -->
+      <div id="job-form-step" style="display:none;">
+        <div class="selected-job-banner">
+          <div>
+            <div class="cust-name" id="selected-job-name"></div>
+            <div class="cust-sub" id="selected-job-address"></div>
+          </div>
+          <button type="button" class="link-button" id="change-job-button" style="width:auto; margin:0;">Change</button>
+        </div>
+
+        <div class="type-toggle">
+          <button type="button" id="gen-type-deposit-btn" class="active">20% Deposit</button>
+          <button type="button" id="gen-type-balance-btn">80% Balance</button>
+        </div>
+
+        <label class="field-label" for="gen-email">Email</label>
+        <input type="email" id="gen-email" class="field-input" placeholder="jane@example.com" />
+
+        <label class="field-label" for="gen-phone">Phone number</label>
+        <input type="tel" id="gen-phone" class="field-input" placeholder="(210) 555-0123" />
+
+        <label class="field-label" for="gen-total-cost">Total project cost</label>
+        <div class="amount-input-group">
+          <span class="prefix">$</span>
+          <input type="text" inputmode="decimal" id="gen-total-cost" class="field-input" placeholder="0.00" />
+        </div>
+
+        <div class="locked-amount">
+          <span class="label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            <span id="gen-amount-due-caption">Amount due (20%)</span>
+          </span>
+          <span class="value" id="gen-amount-due-value">$0.00</span>
+        </div>
+
+        <div class="error-message" id="generate-error"></div>
+        <div class="success-message" id="generate-success"></div>
+
+        <button type="button" class="primary" id="gen-continue-button" disabled>Continue to Payment</button>
+        <button type="button" class="secondary" id="gen-send-email-button" style="width:100%; margin-top:8px;" disabled>Send to Homeowner by Email</button>
+
+        <div class="link-block" id="gen-link-block">
+          <label class="field-label">Or send this link to the homeowner</label>
+          <div class="link-row">
+            <input type="text" id="gen-generated-link" class="field-input" readonly />
+            <button type="button" class="copy-button" id="gen-copy-link-button">Copy</button>
+          </div>
+        </div>
+
+        <button type="button" class="link-button" id="back-to-list-button">Choose a different job</button>
+      </div>
+
+      <button type="button" class="link-button" id="back-to-hub-button">← Back to Sent Links</button>
+    </div>
   </div>
 
   <script src="hub.js"></script>

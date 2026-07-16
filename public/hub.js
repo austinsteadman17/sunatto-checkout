@@ -46,13 +46,45 @@ const currentUserName = document.getElementById('current-user-name');
 const logoutButton = document.getElementById('logout-button');
 const jobCountNote = document.getElementById('job-count-note');
 const refreshButton = document.getElementById('refresh-button');
+const generateLinkButton = document.getElementById('generate-link-button');
 const searchInput = document.getElementById('search-input');
 const summaryStrip = document.getElementById('summary-strip');
 const hubError = document.getElementById('hub-error');
 const tableWrap = document.getElementById('table-wrap');
 
+const generateView = document.getElementById('generate-view');
+const jobPickerStep = document.getElementById('job-picker-step');
+const jobFormStep = document.getElementById('job-form-step');
+const jobSearchInput = document.getElementById('job-search-input');
+const jobPickerList = document.getElementById('job-picker-list');
+const selectedJobName = document.getElementById('selected-job-name');
+const selectedJobAddress = document.getElementById('selected-job-address');
+const changeJobButton = document.getElementById('change-job-button');
+const backToListButton = document.getElementById('back-to-list-button');
+const backToHubButton = document.getElementById('back-to-hub-button');
+const genTypeDepositBtn = document.getElementById('gen-type-deposit-btn');
+const genTypeBalanceBtn = document.getElementById('gen-type-balance-btn');
+const genEmailField = document.getElementById('gen-email');
+const genPhoneField = document.getElementById('gen-phone');
+const genTotalCostField = document.getElementById('gen-total-cost');
+const genAmountDueCaption = document.getElementById('gen-amount-due-caption');
+const genAmountDueValue = document.getElementById('gen-amount-due-value');
+const generateError = document.getElementById('generate-error');
+const generateSuccess = document.getElementById('generate-success');
+const genContinueButton = document.getElementById('gen-continue-button');
+const genSendEmailButton = document.getElementById('gen-send-email-button');
+const genLinkBlock = document.getElementById('gen-link-block');
+const genGeneratedLinkField = document.getElementById('gen-generated-link');
+const genCopyLinkButton = document.getElementById('gen-copy-link-button');
+
 let allLinks = [];
 let pendingName = { firstName: '', lastName: '' }; // held between the name step and the pin steps
+
+let myJobs = [];              // full job list (name/address/email/phone/totalCostCents) for this user
+let myJobsLoaded = false;
+let selectedJob = null;       // the job currently being turned into a link
+let genType = 'deposit';
+let genLastRecordedFingerprint = null;
 
 // --- storage helpers ---
 
@@ -98,12 +130,20 @@ function escapeHtml(str) {
 
 function showLogin() {
   hubView.style.display = 'none';
+  generateView.style.display = 'none';
   loginView.style.display = 'block';
 }
 
 function showHub() {
   loginView.style.display = 'none';
+  generateView.style.display = 'none';
   hubView.style.display = 'block';
+}
+
+function showGenerate() {
+  loginView.style.display = 'none';
+  hubView.style.display = 'none';
+  generateView.style.display = 'block';
 }
 
 function showStep(step) {
@@ -447,6 +487,258 @@ async function resendLink(btn) {
 
 refreshButton.addEventListener('click', loadAndRender);
 searchInput.addEventListener('input', renderTable);
+
+// --- Generate Payment Link ---
+//
+// Lets a logged-in person pick one of THEIR jobs (same visibility rule as
+// the sent-links list above — Sales Rep/Office/Manager column match) and
+// turn it into a payment link, pre-filled from the Monday board's Email,
+// Customer Phone, and Total Cost columns instead of re-typing everything
+// intake.html would ask for. Generating a link here calls the exact same
+// POST /api/links + /api/send-homeowner-email endpoints intake.js uses,
+// so it shows up on the Sent Links list the same way.
+
+function formatNumberWithCommas(raw) {
+  let [intPart, decPart] = raw.split('.');
+  intPart = intPart.replace(/^0+(?=\d)/, '') || '0';
+  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return decPart !== undefined ? `${withCommas}.${decPart}` : withCommas;
+}
+
+function attachCommaFormatting(field) {
+  field.addEventListener('input', () => {
+    const cursorFromEnd = field.value.length - field.selectionStart;
+    let raw = field.value.replace(/[^\d.]/g, '');
+    const firstDot = raw.indexOf('.');
+    if (firstDot !== -1) {
+      const intPart = raw.slice(0, firstDot);
+      const decPart = raw.slice(firstDot + 1).replace(/\./g, '').slice(0, 2);
+      raw = `${intPart}.${decPart}`;
+    }
+    field.value = raw ? formatNumberWithCommas(raw) : '';
+    const newPos = Math.max(field.value.length - cursorFromEnd, 0);
+    field.setSelectionRange(newPos, newPos);
+  });
+}
+attachCommaFormatting(genTotalCostField);
+
+async function openGenerateView() {
+  generateError.textContent = '';
+  generateSuccess.textContent = '';
+  selectedJob = null;
+  jobFormStep.style.display = 'none';
+  jobPickerStep.style.display = 'block';
+  showGenerate();
+
+  if (!myJobsLoaded) {
+    jobPickerList.innerHTML = '<div class="job-picker-empty">Loading your jobs…</div>';
+    try {
+      const res = await fetch('/api/hub/my-jobs', { headers: { 'X-Hub-Session': getSessionToken() } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not load your jobs.');
+      myJobs = data.jobs || [];
+      myJobsLoaded = true;
+    } catch (err) {
+      jobPickerList.innerHTML = `<div class="job-picker-empty">${escapeHtml(err.message)}</div>`;
+      return;
+    }
+  }
+  renderJobPicker();
+}
+
+function renderJobPicker() {
+  const query = jobSearchInput.value.trim().toLowerCase();
+  const jobs = myJobs.filter((j) => !query || `${j.name} ${j.address}`.toLowerCase().includes(query));
+
+  if (jobs.length === 0) {
+    jobPickerList.innerHTML = `<div class="job-picker-empty">${
+      myJobs.length === 0
+        ? 'No jobs on the Monday board are attached to your name yet.'
+        : 'No jobs match your search.'
+    }</div>`;
+    return;
+  }
+
+  jobPickerList.innerHTML = jobs.map((j, i) => `
+    <div class="job-picker-row" data-index="${myJobs.indexOf(j)}">
+      <div class="cust-name">${escapeHtml(j.name || '(no name)')}</div>
+      <div class="cust-sub">${escapeHtml(j.address || '')}</div>
+    </div>
+  `).join('');
+
+  jobPickerList.querySelectorAll('.job-picker-row').forEach((row) => {
+    row.addEventListener('click', () => selectJob(myJobs[Number(row.getAttribute('data-index'))]));
+  });
+}
+
+function selectJob(job) {
+  selectedJob = job;
+  generateError.textContent = '';
+  generateSuccess.textContent = '';
+  genLastRecordedFingerprint = null;
+
+  selectedJobName.textContent = job.name || '(no name)';
+  selectedJobAddress.textContent = job.address || '';
+  genEmailField.value = job.email || '';
+  genPhoneField.value = job.phone || '';
+  genTotalCostField.value = job.totalCostCents ? formatNumberWithCommas((job.totalCostCents / 100).toFixed(2)) : '';
+  genLinkBlock.style.display = 'none';
+
+  setGenType('deposit');
+  jobPickerStep.style.display = 'none';
+  jobFormStep.style.display = 'block';
+}
+
+function setGenType(type) {
+  genType = type;
+  genTypeDepositBtn.classList.toggle('active', type === 'deposit');
+  genTypeBalanceBtn.classList.toggle('active', type === 'balance');
+  genAmountDueCaption.textContent = type === 'deposit' ? 'Amount due (20%)' : 'Amount due (80%)';
+  recomputeGen();
+}
+genTypeDepositBtn.addEventListener('click', () => setGenType('deposit'));
+genTypeBalanceBtn.addEventListener('click', () => setGenType('balance'));
+
+function currentGenAmountCents() {
+  const total = parseFloat((genTotalCostField.value || '').replace(/,/g, ''));
+  if (!total || total <= 0) return 0;
+  const rate = genType === 'deposit' ? 0.2 : 0.8;
+  return Math.round(total * rate * 100);
+}
+
+function recomputeGen() {
+  const cents = currentGenAmountCents();
+  genAmountDueValue.textContent = fmtMoney(cents);
+
+  const email = genEmailField.value.trim();
+  const ready = !!selectedJob && cents > 0;
+  genContinueButton.disabled = !ready;
+  genSendEmailButton.disabled = !ready || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+  if (ready) {
+    genGeneratedLinkField.value = buildGenCheckoutUrl();
+    genLinkBlock.style.display = 'block';
+  } else {
+    genLinkBlock.style.display = 'none';
+  }
+}
+genTotalCostField.addEventListener('input', recomputeGen);
+genEmailField.addEventListener('input', recomputeGen);
+
+function buildGenCheckoutUrl() {
+  const cents = currentGenAmountCents();
+  const dollars = (cents / 100).toFixed(2);
+  const out = new URLSearchParams();
+  out.set('type', genType);
+  out.set('amount', dollars);
+  if (selectedJob && selectedJob.name) out.set('name', selectedJob.name);
+  if (genEmailField.value.trim()) out.set('email', genEmailField.value.trim());
+  if (genPhoneField.value.trim()) out.set('phone', genPhoneField.value.trim());
+  if (selectedJob && selectedJob.address) out.set('address', selectedJob.address);
+  return `${window.location.origin}/checkout.html?${out.toString()}`;
+}
+
+function genFingerprint() {
+  return JSON.stringify([
+    selectedJob && selectedJob.name,
+    selectedJob && selectedJob.address,
+    genEmailField.value.trim(),
+    genPhoneField.value.trim(),
+    genType,
+    currentGenAmountCents(),
+  ]);
+}
+
+async function recordGenLinkIfNeeded() {
+  const fingerprint = genFingerprint();
+  if (fingerprint === genLastRecordedFingerprint) return;
+  genLastRecordedFingerprint = fingerprint;
+  try {
+    const cents = currentGenAmountCents();
+    await fetch('/api/links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerName: selectedJob ? selectedJob.name : '',
+        customerEmail: genEmailField.value.trim(),
+        customerPhone: genPhoneField.value.trim(),
+        jobAddress: selectedJob ? selectedJob.address : '',
+        type: genType,
+        amount: (cents / 100).toFixed(2),
+        checkoutUrl: buildGenCheckoutUrl(),
+      }),
+    });
+  } catch (err) {
+    console.warn('Could not record this link (the link itself still works fine):', err);
+  }
+}
+
+genContinueButton.addEventListener('click', async () => {
+  if (genContinueButton.disabled) return;
+  await recordGenLinkIfNeeded();
+  window.open(buildGenCheckoutUrl(), '_blank');
+});
+
+genSendEmailButton.addEventListener('click', async () => {
+  if (genSendEmailButton.disabled) return;
+  generateError.textContent = '';
+  generateSuccess.textContent = '';
+  const original = genSendEmailButton.textContent;
+  genSendEmailButton.textContent = 'Sending…';
+  genSendEmailButton.disabled = true;
+
+  recordGenLinkIfNeeded(); // fire-and-forget, runs alongside the email send below
+
+  try {
+    const cents = currentGenAmountCents();
+    const response = await fetch('/api/send-homeowner-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerName: selectedJob ? selectedJob.name : '',
+        customerEmail: genEmailField.value.trim(),
+        jobAddress: selectedJob ? selectedJob.address : '',
+        type: genType,
+        amount: (cents / 100).toFixed(2),
+        checkoutUrl: buildGenCheckoutUrl(),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Something went wrong sending the email.');
+    generateSuccess.textContent = `Sent to ${genEmailField.value.trim()}.`;
+  } catch (err) {
+    generateError.textContent = 'Could not send email (' + err.message + '). You can still copy the link above.';
+  } finally {
+    genSendEmailButton.textContent = original;
+    recomputeGen();
+  }
+});
+
+genCopyLinkButton.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(genGeneratedLinkField.value);
+    const original = genCopyLinkButton.textContent;
+    genCopyLinkButton.textContent = 'Copied';
+    setTimeout(() => { genCopyLinkButton.textContent = original; }, 1500);
+  } catch (err) {
+    genGeneratedLinkField.select();
+    generateError.textContent = 'Could not copy automatically — link is selected, use Cmd/Ctrl+C.';
+  }
+});
+
+generateLinkButton.addEventListener('click', openGenerateView);
+jobSearchInput.addEventListener('input', renderJobPicker);
+changeJobButton.addEventListener('click', () => {
+  jobFormStep.style.display = 'none';
+  jobPickerStep.style.display = 'block';
+});
+backToListButton.addEventListener('click', () => {
+  jobFormStep.style.display = 'none';
+  jobPickerStep.style.display = 'block';
+});
+backToHubButton.addEventListener('click', () => {
+  showHub();
+});
 
 // --- boot ---
 
