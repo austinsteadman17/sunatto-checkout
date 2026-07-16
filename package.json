@@ -1,0 +1,16 @@
+{
+  "name": "sunatto-surcharge-checkout",
+  "version": "1.0.0",
+  "description": "Custom checkout for Southern Energy / Sunatto: ACH free, 3% surcharge on credit card only, for both the 20% deposit and 80% final balance. Deployed on Netlify.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "stripe": "^16.8.0",
+    "dotenv": "^16.4.5",
+    "serverless-http": "^3.2.0"
+  }
+}

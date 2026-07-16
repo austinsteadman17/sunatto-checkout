@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Southern Energy Distributors — Secure Payment</title>
+<script src="https://js.stripe.com/v3/"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f6f8fa;
+    margin: 0;
+    padding: 40px 16px;
+    color: #1a1a1a;
+  }
+  .card {
+    max-width: 480px;
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 12px;
+    padding: 32px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+  .row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+  .row.total { font-weight: 600; font-size: 16px; border-top: 1px solid #eee; margin-top: 8px; padding-top: 12px; }
+  .surcharge-note { font-size: 13px; color: #a15c00; background: #fff8ec; border: 1px solid #f0dcae; border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+  button {
+    width: 100%;
+    padding: 12px;
+    border-radius: 8px;
+    border: none;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  #pay-button { background: #635bff; color: white; }
+  #pay-button:disabled { background: #b8b4ff; cursor: not-allowed; }
+  #back-button { background: #f0f0f0; color: #333; }
+  #error-message { color: #d92c20; font-size: 14px; margin-top: 12px; min-height: 18px; }
+  #payment-element { margin-top: 16px; }
+  #breakdown-screen, #success-screen { display: none; }
+  #success-screen { text-align: center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="page-title">Payment</h1>
+    <div class="subtitle" id="page-subtitle">Southern Energy Distributors LLC</div>
+
+    <!-- Step 1: enter payment details -->
+    <div id="entry-screen">
+      <div class="row"><span>Amount due</span><span id="entry-amount">$0.00</span></div>
+      <form id="payment-form">
+        <div id="payment-element"></div>
+        <button id="continue-button" type="submit">Continue</button>
+        <div id="error-message"></div>
+      </form>
+    </div>
+
+    <!-- Step 2: breakdown + explicit confirmation (required disclosure step) -->
+    <div id="breakdown-screen">
+      <div class="row"><span>Subtotal</span><span id="bd-subtotal"></span></div>
+      <div class="row" id="bd-surcharge-row" style="display:none;"><span id="bd-surcharge-label">Card surcharge (3%)</span><span id="bd-surcharge"></span></div>
+      <div class="row total"><span>Total</span><span id="bd-total"></span></div>
+      <div class="surcharge-note" id="surcharge-note" style="display:none;">
+        A 3% surcharge applies to credit card payments. Paying by bank account (ACH) or debit card has no surcharge.
+      </div>
+      <button id="confirm-button">Confirm and Pay</button>
+      <button id="back-button">Use a different payment method</button>
+      <div id="error-message-2"></div>
+    </div>
+
+    <!-- Step 3: result -->
+    <div id="success-screen">
+      <h2>Payment received</h2>
+      <p id="success-detail"></p>
+    </div>
+  </div>
+
+  <script src="checkout.js"></script>
+</body>
+</html>
