@@ -116,6 +116,52 @@ function buildCheckoutUrl() {
   return `${window.location.origin}/checkout.html?${out.toString()}`;
 }
 
+// Records this link on the hub (hub.html) so office staff can see it was
+// sent out and track whether it's been paid. Fires whenever Copy Link,
+// Send Email, or Continue to Payment is used — but skips re-recording if
+// nothing about the job has changed since the last time (so clicking
+// "Copy" then "Send Email" back-to-back for the same job only creates one
+// hub entry, not two). This is purely a tracking nice-to-have: if the hub
+// is unreachable or errors, the rep's actual action (copy/send/continue)
+// still goes through untouched.
+let lastRecordedFingerprint = null;
+
+function currentFingerprint() {
+  return JSON.stringify([
+    nameField.value.trim(),
+    addressField.value.trim(),
+    emailField.value.trim(),
+    phoneField.value.trim(),
+    TYPE,
+    currentAmountCents(),
+  ]);
+}
+
+async function recordLinkIfNeeded() {
+  const fingerprint = currentFingerprint();
+  if (fingerprint === lastRecordedFingerprint) return;
+  lastRecordedFingerprint = fingerprint;
+
+  try {
+    const cents = currentAmountCents();
+    await fetch('/api/links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerName: nameField.value.trim(),
+        customerEmail: emailField.value.trim(),
+        customerPhone: phoneField.value.trim(),
+        jobAddress: addressField.value.trim(),
+        type: TYPE,
+        amount: (cents / 100).toFixed(2),
+        checkoutUrl: buildCheckoutUrl(),
+      }),
+    });
+  } catch (err) {
+    console.warn('Could not record this link on the hub (the link itself still works fine):', err);
+  }
+}
+
 attachCommaFormatting(totalCostField);
 totalCostField.addEventListener('input', () => {
   errorEl.textContent = '';
@@ -139,14 +185,16 @@ emailField.addEventListener('input', () => {
 });
 phoneField.addEventListener('input', updateContinueState);
 
-continueButton.addEventListener('click', () => {
+continueButton.addEventListener('click', async () => {
   if (continueButton.disabled) return;
+  await recordLinkIfNeeded(); // awaited so it isn't cut off by the navigation below
   window.location.href = buildCheckoutUrl();
 });
 
 sendEmailButton.addEventListener('click', async () => {
   if (sendEmailButton.disabled) return;
 
+  recordLinkIfNeeded(); // fire-and-forget, runs alongside the email send below
   errorEl.textContent = '';
   successEl.textContent = '';
   const originalLabel = sendEmailButton.textContent;
@@ -181,6 +229,7 @@ sendEmailButton.addEventListener('click', async () => {
 });
 
 copyLinkButton.addEventListener('click', async () => {
+  recordLinkIfNeeded(); // fire-and-forget, runs alongside the copy below
   try {
     await navigator.clipboard.writeText(generatedLinkField.value);
     const original = copyLinkButton.textContent;

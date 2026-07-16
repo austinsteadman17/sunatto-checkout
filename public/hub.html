@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Southern Energy Distributors — Payment Links Hub</title>
+<style>
+  :root {
+    --black: #16171B;
+    --soft-black: #0A0A0A;
+    --white: #FFFFFF;
+    --background: #FAFAF9;
+
+    --gray-50: #FAFAFA;
+    --gray-100: #F5F5F4;
+    --gray-150: #E3E3E6;
+    --gray-200: #DFE1E6;
+    --gray-300: #C9CBD2;
+    --gray-400: #9AA5B1;
+    --gray-500: #7D818A;
+    --gray-600: #5B5E66;
+    --gray-700: #454952;
+    --gray-800: #232323;
+
+    --gold: #F2A900;
+    --gold-dark: #C98A0A;
+    --gold-light: #FDF3D6;
+
+    --green: #1A9A5B;
+    --green-light: #E8F7EF;
+
+    --red: #C0392B;
+    --red-light: #FDECEA;
+
+    --sp-1: 8px;
+    --sp-2: 12px;
+    --sp-3: 16px;
+    --sp-4: 20px;
+    --sp-5: 24px;
+    --sp-6: 32px;
+    --sp-7: 40px;
+
+    --radius-sm: 10px;
+    --radius-lg: 16px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--background);
+    margin: 0;
+    padding: var(--sp-7) var(--sp-3);
+    color: var(--black);
+    font-size: 14px;
+  }
+
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  .wrap.narrow { max-width: 420px; }
+
+  .brand { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-5); justify-content: center; }
+  .brand img { height: 28px; width: auto; display: block; }
+  .brand span { font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--gray-700); }
+
+  .card {
+    background: var(--white);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-lg);
+    padding: var(--sp-6);
+  }
+
+  .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--gray-500); margin-bottom: var(--sp-1); }
+  h1 { font-size: 22px; font-weight: 700; margin: 0 0 4px 0; color: var(--black); }
+  .subtitle { color: var(--gray-600); font-size: 13px; margin-bottom: var(--sp-5); }
+
+  label.field-label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    color: var(--gray-500);
+    margin-bottom: 6px;
+  }
+
+  input.field-input {
+    width: 100%;
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--black);
+    font-family: inherit;
+  }
+  input.field-input:focus { outline: none; border-color: var(--gray-400); }
+
+  button.primary {
+    width: 100%;
+    padding: 11px;
+    border-radius: var(--radius-sm);
+    border: none;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: var(--sp-5);
+    font-family: inherit;
+    background: var(--black);
+    color: var(--white);
+    transition: transform 0.05s ease;
+  }
+  button.primary:active { transform: scale(0.97); }
+  button.primary:disabled { background: var(--gray-300); cursor: not-allowed; }
+
+  .error-message {
+    color: var(--red);
+    font-size: 13px;
+    margin-top: var(--sp-2);
+    border-radius: var(--radius-sm);
+  }
+  .error-message:not(:empty) { background: var(--red-light); padding: 10px 12px; }
+
+  button.link-button {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--gray-500);
+    font-size: 12px;
+    font-family: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+    margin-top: var(--sp-3);
+    padding: 4px;
+  }
+
+  .user-info {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: 12px;
+    color: var(--gray-500);
+  }
+  .user-info button.link-button { display: inline; width: auto; margin: 0; }
+
+  /* --- Hub view --- */
+  .hub-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    flex-wrap: wrap;
+    margin-bottom: var(--sp-4);
+  }
+  .hub-header h1 { margin: 0; }
+
+  .summary-strip {
+    display: flex;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-4);
+    flex-wrap: wrap;
+  }
+  .summary-pill {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--gray-600);
+  }
+  .summary-pill strong { display: block; font-size: 18px; color: var(--black); font-weight: 700; }
+
+  .toolbar { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+  .toolbar input.field-input { flex: 1; }
+  button.secondary {
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 0 16px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--black);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button.secondary:active { transform: scale(0.97); }
+  button.secondary:disabled { color: var(--gray-400); border-color: var(--gray-150); cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    color: var(--gray-500);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--gray-150);
+  }
+  tbody td {
+    padding: 12px;
+    border-bottom: 1px solid var(--gray-100);
+    font-size: 13px;
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  .cust-name { font-weight: 700; color: var(--black); }
+  .cust-sub { color: var(--gray-500); font-size: 12px; margin-top: 2px; }
+
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 3px 9px;
+    border-radius: 999px;
+  }
+  .badge.paid { background: var(--green-light); color: var(--green); }
+  .badge.unpaid { background: var(--gray-100); color: var(--gray-600); }
+  .badge.deposit { background: var(--gold-light); color: var(--gold-dark); }
+  .badge.balance { background: var(--gray-100); color: var(--gray-700); }
+
+  .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row-actions button {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: var(--sp-7) var(--sp-3);
+    color: var(--gray-500);
+    font-size: 13px;
+  }
+
+  .footnote {
+    font-size: 12px;
+    color: var(--gray-500);
+    text-align: center;
+    line-height: 1.5;
+    margin-top: var(--sp-5);
+    padding: 0 var(--sp-2);
+  }
+
+  #hub-view { display: none; }
+</style>
+</head>
+<body>
+
+  <div class="wrap narrow" id="login-view">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+    <div class="card">
+      <div class="eyebrow">Payment Links Hub</div>
+      <h1 id="login-title">Staff Access</h1>
+      <div class="subtitle">You'll only see the jobs and payment links you're attached to on the Sunatto Pipeline board.</div>
+
+      <!-- Step 1: who are you -->
+      <div id="step-name">
+        <label class="field-label" for="first-name">First name</label>
+        <input type="text" id="first-name" class="field-input" placeholder="Jane" autocomplete="given-name" />
+        <label class="field-label" for="last-name">Last name</label>
+        <input type="text" id="last-name" class="field-input" placeholder="Doe" autocomplete="family-name" />
+        <button type="button" class="primary" id="continue-name-button">Continue</button>
+      </div>
+
+      <!-- Step 2a: returning user enters their existing PIN -->
+      <div id="step-pin-login" style="display:none;">
+        <div class="subtitle" id="pin-login-greeting"></div>
+        <label class="field-label" for="pin-login-field">PIN</label>
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-login-field" class="field-input" placeholder="••••" maxlength="6" />
+        <button type="button" class="primary" id="login-button">Unlock</button>
+        <button type="button" class="link-button" id="switch-user-button">Not you? Switch user</button>
+      </div>
+
+      <!-- Step 2b: first-time visitor creates a PIN -->
+      <div id="step-pin-create" style="display:none;">
+        <div class="subtitle">We haven't seen that name before — create a 4-6 digit PIN you'll use to log in next time.</div>
+        <label class="field-label" for="pin-create-field">Create PIN</label>
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-create-field" class="field-input" placeholder="••••" maxlength="6" />
+        <label class="field-label" for="pin-confirm-field">Confirm PIN</label>
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-confirm-field" class="field-input" placeholder="••••" maxlength="6" />
+        <button type="button" class="primary" id="create-pin-button">Create Account</button>
+        <button type="button" class="link-button" id="back-to-name-button">Back</button>
+      </div>
+
+      <div class="error-message" id="login-error"></div>
+    </div>
+  </div>
+
+  <div class="wrap" id="hub-view">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+
+    <div class="card">
+      <div class="hub-header">
+        <div>
+          <div class="eyebrow">Payment Links Hub</div>
+          <h1>Sent Links</h1>
+        </div>
+        <div style="display:flex; align-items:center; gap: 12px;">
+          <div class="user-info">
+            Logged in as <strong id="current-user-name"></strong> · <button type="button" class="link-button" id="logout-button">Log out</button>
+          </div>
+          <button type="button" class="secondary" id="refresh-button">Refresh</button>
+        </div>
+      </div>
+
+      <div class="subtitle" id="job-count-note"></div>
+
+      <div class="summary-strip" id="summary-strip"></div>
+
+      <div class="toolbar">
+        <input type="text" id="search-input" class="field-input" placeholder="Search by customer name or address…" />
+      </div>
+
+      <div class="error-message" id="hub-error"></div>
+
+      <div id="table-wrap"></div>
+    </div>
+
+    <div class="footnote">Internal tool for Southern Energy Distributors staff. Visibility here is based on the Sales Rep / Office / Manager columns on the Sunatto Pipeline 2026 Monday board.</div>
+  </div>
+
+  <script src="hub.js"></script>
+</body>
+</html>
