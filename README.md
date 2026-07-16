@@ -215,6 +215,19 @@ digging back through old texts/emails to figure out what's outstanding.
   their own. There's no separate "admin" flag to manage: add or remove
   someone from a job in Monday, and their hub visibility updates
   automatically next time they load the page.
+- **Generating a link from the hub.** The **"+ Generate Link"** button
+  lets someone create a payment link without going through `intake.html`
+  at all. It shows a picker of just the Monday jobs that person is
+  attached to (same Sales Rep/Office/Manager rule as above), and picking
+  one pre-fills email, phone, and total project cost straight from the
+  Monday board's Email / Customer Phone / Total Cost columns — all still
+  editable, since that Monday data can be stale or incomplete. From there
+  it works exactly like `intake.html`: pick 20% Deposit or 80% Balance,
+  then Continue to Payment, Send to Homeowner by Email, or Copy Link. It
+  calls the exact same `/api/links` and `/api/send-homeowner-email`
+  endpoints `intake.html` does, so anything generated this way shows up
+  on the Sent Links list immediately, same fuzzy-matching and "mark paid"
+  behavior included.
 
 ### Logging in
 
@@ -272,7 +285,11 @@ This has **not** been tested against the real Netlify Blobs or Monday APIs
 3. Try **Resend** and confirm the homeowner actually gets a second email.
 4. Log in as someone attached to a *different* job (or a made-up name with
    no jobs) and confirm they do **not** see links that aren't theirs.
-5. Check the Netlify function logs (Project → Logs → Functions) for
+5. Click **"+ Generate Link,"** confirm the job picker only shows jobs
+   that account is attached to, pick one, confirm email/phone/total cost
+   pre-fill correctly, and confirm Continue/Send Email/Copy Link all work
+   and the resulting link shows up back on the Sent Links list.
+6. Check the Netlify function logs (Project → Logs → Functions) for
    `hub/`, `create link`, `list links`, or `resend link` errors if
    anything doesn't behave as expected.
 

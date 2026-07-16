@@ -823,17 +823,27 @@ app.post('/api/hub/login', async (req, res) => {
   }
 });
 
+// The board's contact/cost columns, pulled alongside the address so the
+// "Generate Link" flow on the hub can pre-fill a job's email, phone, and
+// total project cost instead of a rep re-typing them from scratch.
+const MONDAY_EMAIL_COLUMN_ID = 'email_mks09rsp';
+const MONDAY_PHONE_COLUMN_ID = 'phone_mkrwp33a';
+const MONDAY_TOTAL_COST_COLUMN_ID = 'numeric_mkrw6pqv';
+
 // Queries the Sunatto Pipeline 2026 board directly (bypassing
 // findMondayItem's single-match requirement above, since here we WANT
 // every job this person is attached to, not just one) and returns
-// { name, address } for every item where fullName shows up in the Sales
-// Rep, Office, or Manager column. Each of those columns' text value is a
-// comma-separated list of Monday people's display names.
+// { id, name, address, email, phone, totalCostCents } for every item where
+// fullName shows up in the Sales Rep, Office, or Manager column. Each of
+// those columns' text value is a comma-separated list of Monday people's
+// display names.
 async function getUserAttachedJobs(fullName) {
   const targetName = normalizeForMatch(fullName);
   if (!targetName) return [];
 
   const peopleColumnIds = [MONDAY_SALES_REP_COLUMN_ID, MONDAY_OFFICE_COLUMN_ID, MONDAY_MANAGER_COLUMN_ID];
+  const contactColumnIds = [MONDAY_ADDRESS_COLUMN_ID, MONDAY_EMAIL_COLUMN_ID, MONDAY_PHONE_COLUMN_ID, MONDAY_TOTAL_COST_COLUMN_ID];
+  const allColumnIds = [...contactColumnIds, ...peopleColumnIds];
   let cursor = null;
   const jobs = [];
 
@@ -846,7 +856,7 @@ async function getUserAttachedJobs(fullName) {
             items {
               id
               name
-              column_values(ids: ["${MONDAY_ADDRESS_COLUMN_ID}", ${peopleColumnIds.map((id) => `"${id}"`).join(', ')}]) {
+              column_values(ids: [${allColumnIds.map((id) => `"${id}"`).join(', ')}]) {
                 id
                 text
               }
@@ -869,7 +879,15 @@ async function getUserAttachedJobs(fullName) {
         .some((n) => n && (n.includes(targetName) || targetName.includes(n)));
 
       if (attached) {
-        jobs.push({ name: item.name, address: values[MONDAY_ADDRESS_COLUMN_ID] || '' });
+        const totalCost = parseFloat(values[MONDAY_TOTAL_COST_COLUMN_ID] || '');
+        jobs.push({
+          id: item.id,
+          name: item.name,
+          address: values[MONDAY_ADDRESS_COLUMN_ID] || '',
+          email: values[MONDAY_EMAIL_COLUMN_ID] || '',
+          phone: values[MONDAY_PHONE_COLUMN_ID] || '',
+          totalCostCents: Number.isFinite(totalCost) ? Math.round(totalCost * 100) : null,
+        });
       }
     }
     cursor = page.cursor;
@@ -950,6 +968,23 @@ app.get('/api/links', async (req, res) => {
     res.json({ links: visibleLinks, jobCount: jobs.length });
   } catch (err) {
     console.error('list links error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Powers the hub's "Generate Payment Link" picker — the same visibility
+// rule as GET /api/links above (name in Sales Rep/Office/Manager column),
+// but returning full job details (email, phone, total cost) instead of
+// just name+address, so the generate form can pre-fill from Monday rather
+// than making the rep re-type everything intake.html would ask for.
+app.get('/api/hub/my-jobs', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const jobs = await getUserAttachedJobs(fullNameOf(user));
+    res.json({ jobs });
+  } catch (err) {
+    console.error('hub/my-jobs error:', err);
     res.status(500).json({ error: err.message });
   }
 });
