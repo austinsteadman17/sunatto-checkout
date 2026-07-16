@@ -25,6 +25,11 @@ document.getElementById('page-eyebrow').textContent =
 document.getElementById('page-subtitle').textContent =
   `Southern Energy Distributors LLC${CUSTOMER_NAME ? ' — ' + CUSTOMER_NAME : ''}`;
 
+document.getElementById('footnote').textContent =
+  TYPE === 'deposit'
+    ? 'Secure 20% deposit for your residential solar installation, due at signing. The remaining 80% balance will be invoiced separately after installation is complete. Processed securely via Stripe. Questions? Call (210) 504-7669.'
+    : 'Secure final 80% balance payment for your completed residential solar installation. Processed securely via Stripe. Questions? Call (210) 504-7669.';
+
 let stripe, elements, paymentIntentId, currentPaymentMethodId, currentSurchargeCents;
 
 const lockedBlock = document.getElementById('locked-amount-block');
