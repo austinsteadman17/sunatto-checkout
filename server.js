@@ -50,7 +50,15 @@ const SURCHARGE_RATE = 0.03; // 3% — the US cap. Do not raise this without
 // ---------------------------------------------------------------------
 app.post('/api/create-intent', async (req, res) => {
   try {
-    const { amountCents, type, customerEmail, customerName, description } = req.body;
+    const {
+      amountCents,
+      type,
+      customerEmail,
+      customerName,
+      customerPhone,
+      jobAddress,
+      description,
+    } = req.body;
 
     if (!amountCents || amountCents <= 0) {
       return res.status(400).json({ error: 'amountCents is required and must be > 0' });
@@ -69,7 +77,11 @@ app.post('/api/create-intent', async (req, res) => {
       customer = await stripe.customers.create({
         email: customerEmail,
         name: customerName,
+        phone: customerPhone || undefined,
       });
+    } else if (customerPhone && !customer.phone) {
+      // Keep the customer record current if we now have a phone number on file.
+      await stripe.customers.update(customer.id, { phone: customerPhone });
     }
 
     const paymentIntent = await stripe.paymentIntents.create(
@@ -84,6 +96,9 @@ app.post('/api/create-intent', async (req, res) => {
         metadata: {
           sunatto_payment_type: type,
           base_amount_cents: String(amountCents),
+          customer_name: customerName || '',
+          customer_phone: customerPhone || '',
+          job_address: jobAddress || '',
         },
       },
       PREVIEW_VERSION
@@ -144,7 +159,9 @@ app.post('/api/payment-method-info', async (req, res) => {
 // ---------------------------------------------------------------------
 // 3. After the customer has SEEN the surcharge breakdown and explicitly
 //    confirmed, update the PaymentIntent's amount/surcharge fields and
-//    confirm it.
+//    confirm it. On success, best-effort sync the result back to
+//    Monday.com (see syncPaymentToMonday below) — this never blocks or
+//    fails the payment response to the customer.
 // ---------------------------------------------------------------------
 app.post('/api/finalize', async (req, res) => {
   try {
@@ -177,9 +194,19 @@ app.post('/api/finalize', async (req, res) => {
       status: confirmed.status,
       clientSecret: confirmed.client_secret, // frontend may need this if 3DS/next_action is required
     });
+
+    // Fire-and-forget: don't make the customer wait on Monday.com, and never
+    // let a Monday.com hiccup affect the payment result already sent above.
+    if (confirmed.status === 'succeeded' || confirmed.status === 'processing') {
+      syncPaymentToMonday(confirmed).catch((err) => {
+        console.error('Monday.com sync failed (payment itself was NOT affected):', err);
+      });
+    }
   } catch (err) {
     console.error('finalize error:', err);
-    res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
@@ -216,6 +243,169 @@ app.post('/api/refund', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ---------------------------------------------------------------------
+// 5. Monday.com sync — best effort, fire-and-forget.
+//
+// When a payment succeeds, try to find the matching item on the
+// "Sunatto Pipeline 2026" board (matched the same way the scheduled
+// invoice-drafting tasks already match — by customer name AND address,
+// so "Evan Shiels" vs "Evan Shiels 2" at different addresses are never
+// confused), mark the correct status column "Paid", and post an update
+// mentioning Nicole so she knows to update her own boards.
+//
+// This is intentionally isolated from the payment flow: if MONDAY_API_TOKEN
+// is missing, if the API call fails, or if we can't confidently find a
+// single matching item, we log it and move on. A missed Monday sync is an
+// inconvenience; it should never turn into a failed or double-charged
+// payment.
+//
+// IMPORTANT: like the surcharge code, this has NOT been tested against the
+// live Monday.com API (this sandbox cannot reach external APIs either).
+// Test with a real payment against a real board item before relying on it,
+// and double check that the @mention actually notifies Nicole rather than
+// just rendering as plain text — Monday's mention format has changed
+// before. See README.
+// ---------------------------------------------------------------------
+const MONDAY_API_URL = 'https://api.monday.com/v2';
+const MONDAY_BOARD_ID = '18412868315'; // "Sunatto Pipeline 2026"
+const MONDAY_ADDRESS_COLUMN_ID = 'location_mkrw6nb2'; // "Address"
+const MONDAY_DEPOSIT_STATUS_COLUMN_ID = 'color_mm59rxn'; // "20% Invoice"
+const MONDAY_BALANCE_STATUS_COLUMN_ID = 'color_mm59vk78'; // "80% Invoice"
+const NICOLE_MONDAY_USER_ID = 43023232;
+
+function normalizeForMatch(str) {
+  return (str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+async function mondayRequest(query, variables) {
+  if (!process.env.MONDAY_API_TOKEN) {
+    throw new Error('MONDAY_API_TOKEN is not set — skipping Monday.com sync.');
+  }
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: process.env.MONDAY_API_TOKEN,
+      'API-Version': '2024-10',
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await response.json();
+  if (json.errors) {
+    throw new Error('Monday.com API error: ' + JSON.stringify(json.errors));
+  }
+  return json.data;
+}
+
+// Finds exactly one matching board item by name + address. Returns null
+// (and logs why) if there's no match OR more than one possible match —
+// we never guess which job a payment belongs to.
+async function findMondayItem(customerName, jobAddress) {
+  const targetName = normalizeForMatch(customerName);
+  const targetAddress = normalizeForMatch(jobAddress);
+
+  if (!targetName || !targetAddress) {
+    console.warn('Monday sync: missing customer name or job address, skipping match.');
+    return null;
+  }
+
+  let cursor = null;
+  const matches = [];
+
+  do {
+    const data = await mondayRequest(
+      `query ($boardId: [ID!], $cursor: String) {
+        boards(ids: $boardId) {
+          items_page(limit: 100, cursor: $cursor) {
+            cursor
+            items {
+              id
+              name
+              column_values(ids: ["${MONDAY_ADDRESS_COLUMN_ID}"]) { text }
+            }
+          }
+        }
+      }`,
+      { boardId: [MONDAY_BOARD_ID], cursor }
+    );
+
+    const page = data.boards[0].items_page;
+    for (const item of page.items) {
+      const itemName = normalizeForMatch(item.name);
+      const itemAddress = normalizeForMatch(item.column_values[0] && item.column_values[0].text);
+      const nameMatch = itemName && (itemName.includes(targetName) || targetName.includes(itemName));
+      const addressMatch = itemAddress && (itemAddress.includes(targetAddress) || targetAddress.includes(itemAddress));
+      if (nameMatch && addressMatch) {
+        matches.push(item);
+      }
+    }
+    cursor = page.cursor;
+  } while (cursor);
+
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  if (matches.length === 0) {
+    console.warn(`Monday sync: no board item matched name="${customerName}" address="${jobAddress}".`);
+  } else {
+    console.warn(`Monday sync: ${matches.length} board items matched name="${customerName}" address="${jobAddress}" — skipping to avoid updating the wrong one.`);
+  }
+  return null;
+}
+
+async function markMondayItemPaid(itemId, type) {
+  const columnId = type === 'deposit' ? MONDAY_DEPOSIT_STATUS_COLUMN_ID : MONDAY_BALANCE_STATUS_COLUMN_ID;
+  await mondayRequest(
+    `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) {
+        id
+      }
+    }`,
+    {
+      boardId: MONDAY_BOARD_ID,
+      itemId: String(itemId),
+      columnId,
+      value: JSON.stringify({ label: 'Paid' }),
+    }
+  );
+}
+
+async function notifyNicoleOnMonday(itemId, type) {
+  const label = type === 'deposit' ? '20% deposit' : '80% balance';
+  await mondayRequest(
+    `mutation ($itemId: ID!, $body: String!, $mentionsList: [MentionObjectInput!]) {
+      create_update(item_id: $itemId, body: $body, mentions_list: $mentionsList) {
+        id
+      }
+    }`,
+    {
+      itemId: String(itemId),
+      body: `The ${label} for this job has been collected online via the Southern Energy checkout page. @Nicole please update your boards accordingly.`,
+      mentionsList: [{ id: NICOLE_MONDAY_USER_ID, type: 'User' }],
+    }
+  );
+}
+
+async function syncPaymentToMonday(paymentIntent) {
+  const type = paymentIntent.metadata && paymentIntent.metadata.sunatto_payment_type;
+  const customerName = paymentIntent.metadata && paymentIntent.metadata.customer_name;
+  const jobAddress = paymentIntent.metadata && paymentIntent.metadata.job_address;
+
+  if (!type) {
+    console.warn('Monday sync: PaymentIntent has no sunatto_payment_type metadata, skipping.');
+    return;
+  }
+
+  const item = await findMondayItem(customerName, jobAddress);
+  if (!item) {
+    return; // findMondayItem already logged why
+  }
+
+  await markMondayItemPaid(item.id, type);
+  await notifyNicoleOnMonday(item.id, type);
+  console.log(`Monday sync: marked item ${item.id} ("${item.name}") Paid for ${type}.`);
+}
 
 // Publishable key + Stripe account-level config the frontend needs.
 app.get('/api/config', (req, res) => {
