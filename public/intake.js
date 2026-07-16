@@ -31,6 +31,34 @@ function fmt(cents) {
   return '$' + (cents / 100).toFixed(2);
 }
 
+// Live comma-formatting for the "Total project cost" field, e.g. typing
+// "18500" becomes "18,500" and "18500.5" becomes "18,500.5" as you type.
+function formatNumberWithCommas(raw) {
+  let [intPart, decPart] = raw.split('.');
+  intPart = intPart.replace(/^0+(?=\d)/, '') || '0';
+  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return decPart !== undefined ? `${withCommas}.${decPart}` : withCommas;
+}
+
+function attachCommaFormatting(field) {
+  field.addEventListener('input', () => {
+    const cursorFromEnd = field.value.length - field.selectionStart;
+    let raw = field.value.replace(/[^\d.]/g, '');
+
+    // Only allow one decimal point, max 2 decimal digits.
+    const firstDot = raw.indexOf('.');
+    if (firstDot !== -1) {
+      const intPart = raw.slice(0, firstDot);
+      const decPart = raw.slice(firstDot + 1).replace(/\./g, '').slice(0, 2);
+      raw = `${intPart}.${decPart}`;
+    }
+
+    field.value = raw ? formatNumberWithCommas(raw) : '';
+    const newPos = Math.max(field.value.length - cursorFromEnd, 0);
+    field.setSelectionRange(newPos, newPos);
+  });
+}
+
 function setType(type) {
   TYPE = type;
   typeDepositBtn.classList.toggle('active', type === 'deposit');
@@ -88,6 +116,7 @@ function buildCheckoutUrl() {
   return `${window.location.origin}/checkout.html?${out.toString()}`;
 }
 
+attachCommaFormatting(totalCostField);
 totalCostField.addEventListener('input', () => {
   errorEl.textContent = '';
   successEl.textContent = '';
@@ -166,3 +195,31 @@ copyLinkButton.addEventListener('click', async () => {
 });
 
 setType(TYPE);
+
+// Address autocomplete via Radar (https://radar.com) — optional. If
+// RADAR_PUBLISHABLE_KEY isn't set on the server, this silently does
+// nothing and the address field just stays a plain text field.
+(async function initAddressAutocomplete() {
+  try {
+    const configRes = await fetch('/api/config');
+    const config = await configRes.json();
+    if (!config.radarPublishableKey || !window.Radar) return;
+
+    Radar.initialize(config.radarPublishableKey);
+    Radar.ui.autocomplete({
+      container: 'customer-address', // renders into the existing input, keeping its styling
+      countryCode: 'US',
+      placeholder: '123 Main St, Del Rio, TX',
+      onSelection: (address) => {
+        addressField.value = address.formattedAddress || addressField.value;
+        errorEl.textContent = '';
+        successEl.textContent = '';
+        updateContinueState();
+      },
+    });
+  } catch (err) {
+    // Autocomplete is a nice-to-have — if Radar's API is unreachable or
+    // misconfigured, the address field just stays a plain text field.
+    console.warn('Address autocomplete unavailable:', err);
+  }
+})();

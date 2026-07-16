@@ -22,6 +22,33 @@ function fmt(cents) {
   return '$' + (cents / 100).toFixed(2);
 }
 
+// Live comma-formatting for manually-typed amounts, e.g. typing "18500"
+// becomes "18,500" as you type.
+function formatNumberWithCommas(raw) {
+  let [intPart, decPart] = raw.split('.');
+  intPart = intPart.replace(/^0+(?=\d)/, '') || '0';
+  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return decPart !== undefined ? `${withCommas}.${decPart}` : withCommas;
+}
+
+function attachCommaFormatting(field) {
+  field.addEventListener('input', () => {
+    const cursorFromEnd = field.value.length - field.selectionStart;
+    let raw = field.value.replace(/[^\d.]/g, '');
+
+    const firstDot = raw.indexOf('.');
+    if (firstDot !== -1) {
+      const intPart = raw.slice(0, firstDot);
+      const decPart = raw.slice(firstDot + 1).replace(/\./g, '').slice(0, 2);
+      raw = `${intPart}.${decPart}`;
+    }
+
+    field.value = raw ? formatNumberWithCommas(raw) : '';
+    const newPos = Math.max(field.value.length - cursorFromEnd, 0);
+    field.setSelectionRange(newPos, newPos);
+  });
+}
+
 document.getElementById('page-eyebrow').textContent =
   TYPE === 'deposit' ? '20% Deposit' : 'Final Balance (80%)';
 document.getElementById('page-subtitle').textContent =
@@ -52,6 +79,7 @@ if (AMOUNT_LOCKED) {
   manualBlock.style.display = 'block';
   paymentForm.style.display = 'none';
 
+  attachCommaFormatting(amountField);
   amountField.addEventListener('input', () => {
     errorEl.textContent = '';
   });
