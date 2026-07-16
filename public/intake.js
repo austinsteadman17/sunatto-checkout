@@ -196,29 +196,113 @@ copyLinkButton.addEventListener('click', async () => {
 
 setType(TYPE);
 
-// Address autocomplete via Radar (https://radar.com) — optional. If
-// RADAR_PUBLISHABLE_KEY isn't set on the server, this silently does
-// nothing and the address field just stays a plain text field.
+// Address autocomplete via Mapbox's Search Box API
+// (https://docs.mapbox.com/api/search/search-box/) — optional. If
+// MAPBOX_ACCESS_TOKEN isn't set on the server, this silently does nothing
+// and the address field just stays a plain text field. Built as a small
+// custom dropdown (rather than Mapbox's prebuilt widget) so it matches the
+// existing single-line address field and Sunatto styling exactly.
 (async function initAddressAutocomplete() {
   try {
     const configRes = await fetch('/api/config');
     const config = await configRes.json();
-    if (!config.radarPublishableKey || !window.Radar) return;
+    if (!config.mapboxAccessToken) return;
 
-    Radar.initialize(config.radarPublishableKey);
-    Radar.ui.autocomplete({
-      container: 'customer-address', // renders into the existing input, keeping its styling
-      countryCode: 'US',
-      placeholder: '123 Main St, Del Rio, TX',
-      onSelection: (address) => {
-        addressField.value = address.formattedAddress || addressField.value;
-        errorEl.textContent = '';
-        successEl.textContent = '';
-        updateContinueState();
-      },
+    const token = config.mapboxAccessToken;
+    const suggestionsBox = document.getElementById('address-suggestions');
+    let sessionToken = crypto.randomUUID();
+    let debounceTimer = null;
+    let currentSuggestions = [];
+    let highlightedIndex = -1;
+
+    function closeSuggestions() {
+      suggestionsBox.classList.remove('open');
+      suggestionsBox.innerHTML = '';
+      currentSuggestions = [];
+      highlightedIndex = -1;
+    }
+
+    function renderSuggestions() {
+      suggestionsBox.innerHTML = '';
+      currentSuggestions.forEach((suggestion, i) => {
+        const row = document.createElement('div');
+        row.className = 'address-suggestion' + (i === highlightedIndex ? ' highlighted' : '');
+        row.textContent = suggestion.full_address || `${suggestion.name}, ${suggestion.place_formatted || ''}`;
+        row.addEventListener('click', () => selectSuggestion(suggestion));
+        suggestionsBox.appendChild(row);
+      });
+      suggestionsBox.classList.toggle('open', currentSuggestions.length > 0);
+    }
+
+    async function selectSuggestion(suggestion) {
+      try {
+        const res = await fetch(
+          `https://api.mapbox.com/search/searchbox/v1/retrieve/${encodeURIComponent(suggestion.mapbox_id)}` +
+          `?session_token=${sessionToken}&access_token=${token}`
+        );
+        const data = await res.json();
+        const feature = data.features && data.features[0];
+        const fullAddress = feature && feature.properties && feature.properties.full_address;
+        addressField.value = fullAddress || suggestion.full_address || addressField.value;
+      } catch (err) {
+        // Fall back to the suggestion's own address text if retrieve fails.
+        addressField.value = suggestion.full_address || addressField.value;
+      }
+      errorEl.textContent = '';
+      successEl.textContent = '';
+      updateContinueState();
+      closeSuggestions();
+      sessionToken = crypto.randomUUID(); // start a new billing session for the next search
+    }
+
+    addressField.addEventListener('input', () => {
+      const query = addressField.value.trim();
+      clearTimeout(debounceTimer);
+      if (query.length < 3) {
+        closeSuggestions();
+        return;
+      }
+      debounceTimer = setTimeout(async () => {
+        try {
+          const res = await fetch(
+            `https://api.mapbox.com/search/searchbox/v1/suggest?q=${encodeURIComponent(query)}` +
+            `&access_token=${token}&session_token=${sessionToken}&country=US&types=address&limit=5`
+          );
+          const data = await res.json();
+          currentSuggestions = data.suggestions || [];
+          highlightedIndex = -1;
+          renderSuggestions();
+        } catch (err) {
+          console.warn('Address autocomplete unavailable:', err);
+        }
+      }, 200);
+    });
+
+    addressField.addEventListener('keydown', (e) => {
+      if (!suggestionsBox.classList.contains('open')) return;
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        highlightedIndex = Math.min(highlightedIndex + 1, currentSuggestions.length - 1);
+        renderSuggestions();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        highlightedIndex = Math.max(highlightedIndex - 1, 0);
+        renderSuggestions();
+      } else if (e.key === 'Enter' && highlightedIndex >= 0) {
+        e.preventDefault();
+        selectSuggestion(currentSuggestions[highlightedIndex]);
+      } else if (e.key === 'Escape') {
+        closeSuggestions();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (e.target !== addressField && !suggestionsBox.contains(e.target)) {
+        closeSuggestions();
+      }
     });
   } catch (err) {
-    // Autocomplete is a nice-to-have — if Radar's API is unreachable or
+    // Autocomplete is a nice-to-have — if Mapbox's API is unreachable or
     // misconfigured, the address field just stays a plain text field.
     console.warn('Address autocomplete unavailable:', err);
   }

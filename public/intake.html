@@ -4,9 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Southern Energy Distributors — New Payment</title>
-<link href="https://js.radar.com/autocomplete/v1.1.0/radar-autocomplete.css" rel="stylesheet" />
-<script src="https://js.radar.com/v5.1.1/radar.min.js"></script>
-<script src="https://js.radar.com/autocomplete/v1.1.0/radar-autocomplete.min.js"></script>
 <style>
   :root {
     --black: #16171B;
@@ -124,6 +121,34 @@
     font-family: inherit;
   }
   input.field-input:focus { outline: none; border-color: var(--gray-400); }
+
+  .address-field-wrap { position: relative; }
+  .address-suggestions {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    z-index: 10;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .address-suggestions.open { display: block; }
+  .address-suggestion {
+    padding: 10px 12px;
+    font-size: 13px;
+    color: var(--black);
+    cursor: pointer;
+  }
+  .address-suggestion:hover,
+  .address-suggestion.highlighted {
+    background: var(--gray-50);
+  }
+  .address-suggestion + .address-suggestion { border-top: 1px solid var(--gray-100); }
 
   .amount-input-group { position: relative; }
   .amount-input-group .prefix {
@@ -262,7 +287,10 @@
       <input type="text" id="customer-name" class="field-input" placeholder="Jane Homeowner" />
 
       <label class="field-label" for="customer-address">Address</label>
-      <input type="text" id="customer-address" class="field-input" placeholder="123 Main St, Del Rio, TX" />
+      <div class="address-field-wrap">
+        <input type="text" id="customer-address" class="field-input" placeholder="123 Main St, Del Rio, TX" autocomplete="off" />
+        <div class="address-suggestions" id="address-suggestions"></div>
+      </div>
 
       <label class="field-label" for="customer-email">Email</label>
       <input type="email" id="customer-email" class="field-input" placeholder="jane@example.com" />
