@@ -120,7 +120,7 @@ async function init() {
 
   paymentIntentId = intentData.paymentIntentId;
 
-  elements = stripe.elements({ clientSecret: intentData.clientSecret });
+  elements = stripe.elements({ clientSecret: intentData.clientSecret, paymentMethodCreation: 'manual' });
   const paymentElement = elements.create('payment');
   paymentElement.mount('#payment-element');
 }
@@ -176,6 +176,8 @@ document.getElementById('payment-form').addEventListener('submit', async (e) => 
 
     document.getElementById('entry-screen').style.display = 'none';
     document.getElementById('breakdown-screen').style.display = 'block';
+  } catch (err) {
+    errorEl.textContent = 'Something went wrong (' + (err && err.message ? err.message : 'unknown error') + '). Please try again.';
   } finally {
     continueButton.disabled = false;
     continueButton.textContent = 'Continue';
@@ -234,6 +236,8 @@ document.getElementById('confirm-button').addEventListener('click', async () => 
     } else {
       errorEl2.textContent = `Payment status: ${finalStatus}. Please contact Southern Energy Distributors if this seems wrong.`;
     }
+  } catch (err) {
+    errorEl2.textContent = 'Something went wrong (' + (err && err.message ? err.message : 'unknown error') + '). Please try again.';
   } finally {
     confirmButton.disabled = false;
     confirmButton.textContent = 'Confirm and Pay';
