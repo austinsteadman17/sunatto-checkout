@@ -473,6 +473,139 @@ async function syncPaymentToMonday(paymentIntent) {
   console.log(`Monday sync: marked item ${item.id} ("${item.name}") Paid for ${type}.`);
 }
 
+// ---------------------------------------------------------------------
+// 6. Send-to-homeowner email — fully automated, via Postmark.
+//
+// Lets office staff fill out intake.html and email the payment link
+// directly to the homeowner, instead of copying/pasting it into their own
+// email or text app. Uses Postmark's transactional email API.
+//
+// IMPORTANT: like the Stripe surcharge code and the Monday.com sync, this
+// has NOT been tested against the live Postmark API — this sandbox can't
+// reach api.postmarkapp.com either. Send a real test email to yourself
+// before relying on this for real customers. See README.
+// ---------------------------------------------------------------------
+const POSTMARK_API_URL = 'https://api.postmarkapp.com/email';
+const POSTMARK_FROM_EMAIL = 'billing@quotes.southernenergydistributors.com';
+const POSTMARK_REPLY_TO = 'office@southernenergydistributors.com';
+
+function escapeHtml(str) {
+  return String(str || '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function buildHomeownerEmail({ customerName, jobAddress, type, amount, checkoutUrl }) {
+  const firstName = (customerName || '').trim().split(/\s+/)[0] || 'there';
+  const label = type === 'deposit' ? '20% deposit' : 'remaining 80% balance';
+  const subject = type === 'deposit'
+    ? 'Your 20% Deposit — Southern Energy Distributors'
+    : 'Your Final Balance Payment — Southern Energy Distributors';
+
+  const footnote = type === 'deposit'
+    ? 'This is your secure 20% deposit for your residential solar installation, due at signing. The remaining 80% balance will be invoiced separately after installation is complete.'
+    : 'This is your secure final 80% balance payment for your completed residential solar installation.';
+
+  const textBody =
+`Hi ${firstName},
+
+Here is your secure payment link for the ${label} on your Southern Energy Distributors solar installation${jobAddress ? ` at ${jobAddress}` : ''}:
+
+Amount due: $${amount}
+
+${checkoutUrl}
+
+${footnote} Credit card payments include a 3% processing surcharge, disclosed on the payment page before you're charged — ACH bank transfers and debit cards have no surcharge.
+
+Questions? Call us at (210) 504-7669.
+
+— Southern Energy Distributors`;
+
+  const htmlBody = `<!DOCTYPE html>
+<html><body style="margin:0;padding:0;background:#FAFAF9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#16171B;">
+<div style="max-width:480px;margin:0 auto;padding:40px 16px;">
+  <div style="text-align:center;font-size:13px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#454952;margin-bottom:24px;">
+    Southern Energy Distributors
+  </div>
+  <div style="background:#FFFFFF;border:1px solid #E3E3E6;border-radius:16px;padding:32px;">
+    <p style="margin:0 0 16px 0;font-size:14px;">Hi ${escapeHtml(firstName)},</p>
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.5;">
+      Here is your secure payment link for the ${label} on your solar installation${jobAddress ? ` at ${escapeHtml(jobAddress)}` : ''}.
+    </p>
+    <div style="background:#FAFAFA;border:1px solid #E3E3E6;border-radius:10px;padding:14px;margin:20px 0;text-align:center;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;color:#7D818A;">Amount Due</div>
+      <div style="font-size:24px;font-weight:700;color:#16171B;">$${escapeHtml(amount)}</div>
+    </div>
+    <div style="text-align:center;margin:24px 0;">
+      <a href="${checkoutUrl}" style="display:inline-block;background:#16171B;color:#FFFFFF;text-decoration:none;font-weight:700;font-size:14px;padding:12px 28px;border-radius:10px;">
+        Pay Now
+      </a>
+    </div>
+    <p style="margin:16px 0 0 0;font-size:12px;line-height:1.5;color:#5B5E66;">
+      ${footnote} Credit card payments include a 3% processing surcharge, disclosed on the payment page before you're charged — ACH bank transfers and debit cards have no surcharge.
+    </p>
+  </div>
+  <div style="text-align:center;font-size:12px;color:#7D818A;line-height:1.5;margin-top:24px;padding:0 8px;">
+    Questions? Call us at (210) 504-7669.
+  </div>
+</div>
+</body></html>`;
+
+  return { subject, textBody, htmlBody };
+}
+
+app.post('/api/send-homeowner-email', async (req, res) => {
+  try {
+    const { customerName, customerEmail, jobAddress, type, amount, checkoutUrl } = req.body;
+
+    if (!customerEmail) {
+      return res.status(400).json({ error: 'customerEmail is required' });
+    }
+    if (!checkoutUrl) {
+      return res.status(400).json({ error: 'checkoutUrl is required' });
+    }
+    if (!['deposit', 'balance'].includes(type)) {
+      return res.status(400).json({ error: 'type must be "deposit" or "balance"' });
+    }
+    if (!process.env.POSTMARK_SERVER_TOKEN) {
+      return res.status(500).json({ error: 'POSTMARK_SERVER_TOKEN is not set on the server.' });
+    }
+
+    const { subject, textBody, htmlBody } = buildHomeownerEmail({
+      customerName, jobAddress, type, amount, checkoutUrl,
+    });
+
+    const response = await fetch(POSTMARK_API_URL, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Postmark-Server-Token': process.env.POSTMARK_SERVER_TOKEN,
+      },
+      body: JSON.stringify({
+        From: `Southern Energy Distributors <${POSTMARK_FROM_EMAIL}>`,
+        To: customerEmail,
+        ReplyTo: POSTMARK_REPLY_TO,
+        Subject: subject,
+        HtmlBody: htmlBody,
+        TextBody: textBody,
+        MessageStream: 'outbound',
+      }),
+    });
+
+    const json = await response.json();
+    if (!response.ok || json.ErrorCode) {
+      console.error('Postmark send failed:', json);
+      return res.status(502).json({ error: json.Message || 'Postmark rejected the email.' });
+    }
+
+    res.json({ sent: true, messageId: json.MessageID });
+  } catch (err) {
+    console.error('send-homeowner-email error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Publishable key + Stripe account-level config the frontend needs.
 app.get('/api/config', (req, res) => {
   res.json({ publishableKey: process.env.STRIPE_PUBLISHABLE_KEY });

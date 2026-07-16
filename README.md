@@ -39,6 +39,10 @@ Two pages:
    - `MONDAY_API_TOKEN` — optional, but required for the Monday.com sync
      (see below). Without it, payments still work fine — the sync is
      skipped silently and logged.
+   - `POSTMARK_SERVER_TOKEN` — optional, but required for the "Send to
+     Homeowner by Email" button (see "Send to Homeowner email" below).
+     Without it, payments/links still work fine — office staff just fall
+     back to the "Copy" link.
 4. Deploy. Netlify gives you a URL like `https://your-site.netlify.app`.
    You can attach a custom domain (e.g. `pay.southernenergydistributors.com`)
    under Domain settings.
@@ -53,12 +57,18 @@ Two pages:
    read-only — it is always 20% or 80% of the total cost, never manually
    typed.
 3. Once name, address, and a total cost are entered, a "Continue to
-   Payment" button and a copyable link both become available:
+   Payment" button, a "Send to Homeowner by Email" button, and a copyable
+   link all become available:
    - **Continue to Payment** navigates the same device straight to
      `checkout.html` with everything pre-filled — use this when the rep is
      handing their phone/laptop directly to the homeowner.
-   - **Copy** grabs a full link to text or email to the homeowner instead,
-     for when they'll pay later on their own device.
+   - **Send to Homeowner by Email** (requires a valid email address entered
+     above, and `POSTMARK_SERVER_TOKEN` set — see "Send to Homeowner email"
+     below) automatically emails the payment link to the homeowner — no
+     copy/paste needed.
+   - **Copy** grabs a full link to text or email manually instead, for when
+     `POSTMARK_SERVER_TOKEN` isn't set or the rep prefers to send it a
+     different way.
 
 ## Building payment links directly (skipping the intake page)
 
@@ -143,6 +153,54 @@ original Stripe surcharge code before it was tested. Before trusting it:
    expected — every failure is logged with the reason (no match, multiple
    matches, missing token, or an API error).
 
+## Send to Homeowner email (new)
+
+`intake.html` can automatically email the payment link to the homeowner
+instead of the rep having to copy/paste it, using
+[Postmark](https://postmarkapp.com) as the transactional email provider.
+
+- Sends from `billing@quotes.southernenergydistributors.com` (a subdomain
+  dedicated to this, so it never touches the company's main email/MX
+  records), with Reply-To set to `office@southernenergydistributors.com` so
+  any homeowner reply lands in a real inbox.
+- The email includes the amount due, job address, a "Pay Now" button
+  linking straight to `checkout.html` with everything pre-filled, and the
+  same 3% credit-card-surcharge disclosure and phone number used elsewhere.
+- If `POSTMARK_SERVER_TOKEN` isn't set, or the Postmark API call fails for
+  any reason, the button shows an error and the rep can fall back to the
+  "Copy" link — this never blocks or breaks the rest of the intake flow.
+
+### Getting a Postmark server token
+
+In Postmark: **Servers** → select (or create) a server → **API Tokens** →
+copy the **Server API token** shown there. Add it to Netlify as
+`POSTMARK_SERVER_TOKEN`.
+
+This also requires a **verified sending domain** in Postmark
+(`quotes.southernenergydistributors.com` in this build) — under
+**Sender Signatures** → the domain → add the DKIM (TXT) and Return-Path
+(CNAME) DNS records shown there at your DNS provider. No MX record is
+required for sending. (Postmark was chosen over Resend specifically
+because Resend's setup requires an MX record on the sending subdomain,
+which Wix — this domain's original DNS host — doesn't support publishing
+on a subdomain.)
+
+### Testing the Send to Homeowner email
+
+This has **not** been tested against the real Postmark API — same sandbox
+limitation as the Stripe and Monday.com code above (this environment can't
+reach `api.postmarkapp.com` either). Before trusting it:
+
+1. Fill out `intake.html` with your own email address as the "customer
+   email" and click **Send to Homeowner by Email**.
+2. Confirm the email actually arrives (check spam too, until DMARC is set
+   up — see the "Monitor email authentication" prompt in Postmark).
+3. Click the "Pay Now" button in the email and confirm it lands on
+   `checkout.html` with the right amount, name, address, and type
+   pre-filled.
+4. Check the Netlify function logs (Project → Logs → Functions) for any
+   `send-homeowner-email` errors if the button reports a failure.
+
 ## Compliance notes (read this)
 
 - **3% is the real US cap** once you accept both Visa and Mastercard (Visa allows up to 3%, Mastercard up to 4% — you're bound by the lower one). Don't raise this rate without re-checking current network rules.
@@ -156,3 +214,5 @@ original Stripe surcharge code before it was tested. Before trusting it:
 - The Monday.com sync only fires on a *successful* payment through this page. If a rep fills out `intake.html` and the homeowner never completes the payment, there's currently no record of that anywhere (no different from before this build existed, but worth knowing).
 - No admin UI for reviewing past payments outside of Stripe's own dashboard.
 - Monday.com sync is untested against the live API (see above) — verify with one real transaction before relying on it.
+- Send to Homeowner email is untested against the live Postmark API (see above) — send yourself a real test email before relying on it.
+- DMARC isn't set up yet for `quotes.southernenergydistributors.com` (Postmark flags this) — worth adding once the domain has a bit of real sending history, for better inbox placement.
