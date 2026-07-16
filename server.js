@@ -278,6 +278,45 @@ function normalizeForMatch(str) {
   return (str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+// Address matching is the safety-critical part of this sync — customer
+// names repeat on the board far more often than addresses do (e.g.
+// multiple "Evan Shiels" jobs), so a wrong address match is the main way
+// this could ever mark the wrong item "Paid". This normalizer collapses
+// common street-suffix and directional abbreviations so "123 Main St" and
+// "123 Main Street" (or "N" / "North") are recognized as the same address
+// even if the rep and the board entry weren't typed identically, on top of
+// the usual case/punctuation/whitespace normalization.
+const ADDRESS_WORD_REPLACEMENTS = [
+  [/\bstreet\b/g, 'st'],
+  [/\bdrive\b/g, 'dr'],
+  [/\bavenue\b/g, 'ave'],
+  [/\broad\b/g, 'rd'],
+  [/\blane\b/g, 'ln'],
+  [/\bboulevard\b/g, 'blvd'],
+  [/\bcourt\b/g, 'ct'],
+  [/\bplace\b/g, 'pl'],
+  [/\bcircle\b/g, 'cir'],
+  [/\bhighway\b/g, 'hwy'],
+  [/\bparkway\b/g, 'pkwy'],
+  [/\bterrace\b/g, 'ter'],
+  [/\bapartment\b/g, 'apt'],
+  [/\bsuite\b/g, 'ste'],
+  [/\bnorth\b/g, 'n'],
+  [/\bsouth\b/g, 's'],
+  [/\beast\b/g, 'e'],
+  [/\bwest\b/g, 'w'],
+  [/\bunited states\b/g, ''],
+  [/\busa\b/g, ''],
+];
+
+function normalizeAddressForMatch(str) {
+  let s = (str || '').toLowerCase();
+  for (const [pattern, replacement] of ADDRESS_WORD_REPLACEMENTS) {
+    s = s.replace(pattern, replacement);
+  }
+  return s.replace(/[^a-z0-9]/g, '');
+}
+
 async function mondayRequest(query, variables) {
   if (!process.env.MONDAY_API_TOKEN) {
     throw new Error('MONDAY_API_TOKEN is not set — skipping Monday.com sync.');
@@ -303,7 +342,7 @@ async function mondayRequest(query, variables) {
 // we never guess which job a payment belongs to.
 async function findMondayItem(customerName, jobAddress) {
   const targetName = normalizeForMatch(customerName);
-  const targetAddress = normalizeForMatch(jobAddress);
+  const targetAddress = normalizeAddressForMatch(jobAddress);
 
   if (!targetName || !targetAddress) {
     console.warn('Monday sync: missing customer name or job address, skipping match.');
@@ -312,6 +351,11 @@ async function findMondayItem(customerName, jobAddress) {
 
   let cursor = null;
   const matches = [];
+  // Tracked purely for diagnostic logging, so it's obvious in the logs
+  // *why* nothing matched — especially the "same name, different address"
+  // case this was specifically built to avoid getting wrong.
+  const nameOnlyMatches = [];
+  const addressOnlyMatches = [];
 
   do {
     const data = await mondayRequest(
@@ -333,11 +377,16 @@ async function findMondayItem(customerName, jobAddress) {
     const page = data.boards[0].items_page;
     for (const item of page.items) {
       const itemName = normalizeForMatch(item.name);
-      const itemAddress = normalizeForMatch(item.column_values[0] && item.column_values[0].text);
+      const itemAddress = normalizeAddressForMatch(item.column_values[0] && item.column_values[0].text);
       const nameMatch = itemName && (itemName.includes(targetName) || targetName.includes(itemName));
       const addressMatch = itemAddress && (itemAddress.includes(targetAddress) || targetAddress.includes(itemAddress));
+
       if (nameMatch && addressMatch) {
         matches.push(item);
+      } else if (nameMatch) {
+        nameOnlyMatches.push(item);
+      } else if (addressMatch) {
+        addressOnlyMatches.push(item);
       }
     }
     cursor = page.cursor;
@@ -346,10 +395,27 @@ async function findMondayItem(customerName, jobAddress) {
   if (matches.length === 1) {
     return matches[0];
   }
+
   if (matches.length === 0) {
-    console.warn(`Monday sync: no board item matched name="${customerName}" address="${jobAddress}".`);
+    if (nameOnlyMatches.length > 0) {
+      console.warn(
+        `Monday sync: name="${customerName}" matched ${nameOnlyMatches.length} item(s) ` +
+        `(${nameOnlyMatches.map((i) => i.id).join(', ')}) but NONE of them had a matching address ` +
+        `("${jobAddress}") — this is the same-name-different-job case, refusing to guess.`
+      );
+    } else if (addressOnlyMatches.length > 0) {
+      console.warn(
+        `Monday sync: address="${jobAddress}" matched ${addressOnlyMatches.length} item(s) ` +
+        `(${addressOnlyMatches.map((i) => i.id).join(', ')}) but the name ("${customerName}") didn't match any of them.`
+      );
+    } else {
+      console.warn(`Monday sync: no board item matched name="${customerName}" address="${jobAddress}" at all.`);
+    }
   } else {
-    console.warn(`Monday sync: ${matches.length} board items matched name="${customerName}" address="${jobAddress}" — skipping to avoid updating the wrong one.`);
+    console.warn(
+      `Monday sync: ${matches.length} board items matched BOTH name="${customerName}" AND address="${jobAddress}" ` +
+      `(${matches.map((i) => i.id).join(', ')}) — skipping to avoid updating the wrong one.`
+    );
   }
   return null;
 }
