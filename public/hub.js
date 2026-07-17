@@ -171,9 +171,10 @@ function showConfirmModal({ title = 'Are you sure?', message = '', confirmLabel 
 // to the original input (including firing a real `input` event), so any
 // existing `.value` reads or `addEventListener('input', ...)` listeners
 // elsewhere keep working with zero changes.
-function enhancePinInput(input) {
+function enhancePinInput(input, options = {}) {
   if (!input || input.dataset.enhanced) return;
   input.dataset.enhanced = 'true';
+  const autoSubmit = !!options.autoSubmit;
 
   // Every PIN in this system has always been 4 digits in practice (the
   // server accepts 4-6 as a range, but nothing has ever used more than 4)
@@ -202,21 +203,30 @@ function enhancePinInput(input) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  function clickClosestPrimaryButton() {
+    const card = input.closest('.card');
+    const btn = card && card.querySelector('button.primary');
+    if (btn && !btn.disabled) btn.click();
+  }
+
   boxes.forEach((box, i) => {
     box.addEventListener('input', () => {
       box.value = box.value.replace(/[^0-9]/g, '').slice(-1);
       box.classList.toggle('filled', !!box.value);
       if (box.value && i < boxes.length - 1) boxes[i + 1].focus();
       writeThrough();
+      // Once every box has a digit, submit automatically — no need to
+      // click the button or press Enter after typing the last digit.
+      if (autoSubmit && box.value && boxes.every((b) => b.value)) {
+        clickClosestPrimaryButton();
+      }
     });
     box.addEventListener('keydown', (e) => {
       if (e.key === 'Backspace' && !box.value && i > 0) {
         boxes[i - 1].focus();
       }
       if (e.key === 'Enter') {
-        const card = input.closest('.card');
-        const btn = card && card.querySelector('button.primary');
-        if (btn && !btn.disabled) btn.click();
+        clickClosestPrimaryButton();
       }
     });
     box.addEventListener('paste', (e) => {
@@ -226,6 +236,9 @@ function enhancePinInput(input) {
       const nextEmpty = boxes.findIndex((b) => !b.value);
       boxes[nextEmpty === -1 ? boxes.length - 1 : nextEmpty].focus();
       writeThrough();
+      if (autoSubmit && boxes.every((b) => b.value)) {
+        clickClosestPrimaryButton();
+      }
     });
   });
 
@@ -250,8 +263,8 @@ function enhancePinInput(input) {
   input.focusFirstBox = () => boxes[0].focus();
 }
 
+enhancePinInput(pinLoginField, { autoSubmit: true });
 [
-  pinLoginField,
   pinCreateField,
   pinConfirmField,
   currentPinField,
@@ -259,7 +272,7 @@ function enhancePinInput(input) {
   confirmNewPinField,
   newUserPinField,
   resetPinField,
-].forEach(enhancePinInput);
+].forEach((el) => enhancePinInput(el));
 
 let allLinks = [];
 let pendingName = { firstName: '', lastName: '' }; // held between the name step and the pin steps
@@ -580,6 +593,16 @@ async function loadAndRender() {
     await refreshAdminButton();
     showHub();
     renderTable();
+
+    // Pre-load Invoices in the background so a search typed here can
+    // cross-reference them immediately, without waiting for the Invoices
+    // tab to be opened first. If a search is already in progress when
+    // this resolves, refresh the results so it isn't missing matches.
+    fetchInvoices().then(() => {
+      if (hubView.style.display !== 'none' && searchInput.value.trim()) {
+        renderTable();
+      }
+    }).catch(() => {});
   } catch (err) {
     if (err.message === 'unauthorized') {
       const remembered = getRememberedUser();
@@ -629,16 +652,19 @@ function matchesSearch(link, query) {
 
 function renderTable() {
   const query = searchInput.value.trim();
-  const links = allLinks.filter((l) => matchesSearch(l, query));
-
   renderSummary(allLinks);
 
+  // A non-empty search now cross-references Invoices too, so the same
+  // name only has to be typed once — see renderCombinedTable below.
+  if (query) {
+    renderCombinedTable(tableWrap, query);
+    return;
+  }
+
+  const links = allLinks;
+
   if (links.length === 0) {
-    tableWrap.innerHTML = `<div class="empty-state">${
-      allLinks.length === 0
-        ? 'No links to show yet for your jobs. They’ll show up here as soon as a rep sends one from the intake page for a job you’re attached to.'
-        : 'No links match your search.'
-    }</div>`;
+    tableWrap.innerHTML = `<div class="empty-state">No links to show yet for your jobs. They’ll show up here as soon as a rep sends one from the intake page for a job you’re attached to.</div>`;
     return;
   }
 
@@ -1336,18 +1362,135 @@ const INVOICE_STATUS_LABELS = {
   void: 'Void',
 };
 
+// --- Combined search across Payment Links + Invoices ---
+//
+// Typing a name/address in EITHER the Sent Links search box or the
+// Invoices search box searches both data sets at once and shows one
+// merged table (each row tagged "Payment Link" or "Invoice"), so nobody
+// has to repeat the same search in two different places. An empty
+// query falls back to each view's normal, single-source table.
+
+function combinedSearchResults(query) {
+  const matchedLinks = allLinks
+    .filter((l) => matchesSearch(l, query))
+    .map((l) => ({ source: 'link', date: l.lastSentAt, item: l }));
+  const matchedInvoices = allInvoices
+    .filter((i) => matchesInvoiceSearch(i, query))
+    .map((i) => ({ source: 'invoice', date: i.created, item: i }));
+  return [...matchedLinks, ...matchedInvoices].sort(
+    (a, b) => new Date(b.date || 0) - new Date(a.date || 0)
+  );
+}
+
+function renderCombinedRow(entry) {
+  if (entry.source === 'link') {
+    const link = entry.item;
+    const typeLabel = link.type === 'deposit' ? '20% Deposit' : '80% Balance';
+    const statusBadge = link.paid
+      ? '<span class="badge paid">Paid</span>'
+      : '<span class="badge unpaid">Unpaid</span>';
+    const canResend = !!link.customerEmail;
+    return `
+      <tr data-id="${link.id}" data-source="link">
+        <td>
+          <div class="cust-name">${escapeHtml(link.customerName || '(no name)')}</div>
+          <div class="cust-sub">${escapeHtml(link.jobAddress || '')}</div>
+          <div class="cust-sub">${escapeHtml(link.customerEmail || '')}${link.customerPhone ? ' · ' + escapeHtml(link.customerPhone) : ''}</div>
+        </td>
+        <td><span class="source-tag">Payment Link</span></td>
+        <td><span class="badge ${link.type}">${typeLabel}</span></td>
+        <td>${fmtMoney(link.amountCents)}</td>
+        <td>${statusBadge}</td>
+        <td>${fmtDate(link.lastSentAt)}</td>
+        <td>
+          <div class="row-actions">
+            <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
+            <button type="button" class="secondary resend-btn" data-id="${link.id}" ${canResend ? '' : 'disabled title="No email on file"'}>Resend</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }
+
+  const invoice = entry.item;
+  const statusLabel = INVOICE_STATUS_LABELS[invoice.status] || invoice.status;
+  const statusBadge = `<span class="badge ${invoice.status}">${statusLabel}</span>`;
+  const typeBadge = invoice.type
+    ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
+    : '—';
+  const hostedUrl = invoice.hostedInvoiceUrl;
+  const editUrl = invoice.dashboardUrl;
+  const canSend = invoice.status === 'draft' || invoice.status === 'open';
+
+  return `
+    <tr data-id="${invoice.id}" data-source="invoice">
+      <td>
+        <div class="cust-name">${escapeHtml(invoice.customerName || invoice.customerEmail || '(no name)')}</div>
+        <div class="cust-sub">${escapeHtml(invoice.jobAddress || '')}</div>
+        <div class="cust-sub">${escapeHtml(invoice.customerEmail || '')}${invoice.number ? ' · ' + escapeHtml(invoice.number) : ''}</div>
+      </td>
+      <td><span class="source-tag">Invoice</span></td>
+      <td>${typeBadge}</td>
+      <td>${fmtMoney(invoice.totalCents)}</td>
+      <td>${statusBadge}</td>
+      <td>${fmtDate(invoice.created)}</td>
+      <td>
+        <div class="row-actions invoice-actions">
+          ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
+          ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
+          <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'}>${invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent'}</button>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderCombinedTable(container, query) {
+  const results = combinedSearchResults(query);
+
+  if (results.length === 0) {
+    container.innerHTML = `<div class="empty-state">No payment links or invoices match "${escapeHtml(query)}".</div>`;
+    return;
+  }
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Customer</th>
+          <th>Source</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Status</th>
+          <th>Date</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${results.map(renderCombinedRow).join('')}</tbody>
+    </table>
+  `;
+
+  container.querySelectorAll('.copy-btn').forEach((btn) => btn.addEventListener('click', () => copyLink(btn)));
+  container.querySelectorAll('.resend-btn').forEach((btn) => btn.addEventListener('click', () => resendLink(btn)));
+  container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
+}
+
 function renderInvoicesTable() {
   const query = invoicesSearchInput.value.trim();
-  const invoices = allInvoices.filter((i) => matchesInvoiceSearch(i, query));
 
   renderInvoicesSummary(allInvoices);
 
+  // A non-empty search now cross-references Sent Links too, so the same
+  // name only has to be typed once — see renderCombinedTable above.
+  if (query) {
+    renderCombinedTable(invoicesTableWrap, query);
+    return;
+  }
+
+  const invoices = allInvoices;
+
   if (invoices.length === 0) {
-    invoicesTableWrap.innerHTML = `<div class="empty-state">${
-      allInvoices.length === 0
-        ? 'No invoices found for your jobs yet.'
-        : 'No invoices match your search.'
-    }</div>`;
+    invoicesTableWrap.innerHTML = `<div class="empty-state">No invoices found for your jobs yet.</div>`;
     return;
   }
 

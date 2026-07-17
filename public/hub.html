@@ -398,6 +398,16 @@
   .badge.open { background: var(--gold-light); color: var(--gold-dark); }
   .badge.void, .badge.uncollectible { background: var(--red-light); color: var(--red); }
 
+  .source-tag {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--gray-500);
+    white-space: nowrap;
+  }
+
   .row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .row-actions button {
     padding: 7px 12px;
@@ -811,7 +821,7 @@
       <div class="summary-strip" id="summary-strip"></div>
 
       <div class="toolbar">
-        <input type="text" id="search-input" class="field-input" placeholder="Search by customer name or address…" />
+        <input type="text" id="search-input" class="field-input" placeholder="Search payment links & invoices by name or address…" />
       </div>
 
       <div class="error-message" id="hub-error"></div>
@@ -988,7 +998,7 @@
       <div class="summary-strip" id="invoices-summary-strip"></div>
 
       <div class="toolbar">
-        <input type="text" id="invoices-search-input" class="field-input" placeholder="Search by customer name or address…" />
+        <input type="text" id="invoices-search-input" class="field-input" placeholder="Search payment links & invoices by name or address…" />
       </div>
 
       <div class="error-message" id="invoices-error"></div>
