@@ -43,6 +43,7 @@ const createPinButton = document.getElementById('create-pin-button');
 const backToNameButton = document.getElementById('back-to-name-button');
 
 const currentUserName = document.getElementById('current-user-name');
+const currentUserAvatar = document.getElementById('current-user-avatar');
 const logoutButton = document.getElementById('logout-button');
 const jobCountNote = document.getElementById('job-count-note');
 const refreshButton = document.getElementById('refresh-button');
@@ -86,6 +87,7 @@ const changePinError = document.getElementById('change-pin-error');
 const changePinSuccess = document.getElementById('change-pin-success');
 const savePinButton = document.getElementById('save-pin-button');
 const cancelChangePinButton = document.getElementById('cancel-change-pin-button');
+const cancelChangePinButtonTop = document.getElementById('cancel-change-pin-button-top');
 
 const adminButton = document.getElementById('admin-button');
 const adminView = document.getElementById('admin-view');
@@ -122,7 +124,11 @@ function enhancePinInput(input) {
   if (!input || input.dataset.enhanced) return;
   input.dataset.enhanced = 'true';
 
-  const max = parseInt(input.getAttribute('maxlength') || '6', 10);
+  // Every PIN in this system has always been 4 digits in practice (the
+  // server accepts 4-6 as a range, but nothing has ever used more than 4)
+  // — show 4 boxes to match, rather than the field's maxlength="6", which
+  // made the UI look like it required a full 6-digit PIN.
+  const max = 4;
   const wrap = document.createElement('div');
   wrap.className = 'pin-boxes';
 
@@ -241,7 +247,10 @@ function clearSessionToken() {
 // --- formatting helpers ---
 
 function fmtMoney(cents) {
-  return '$' + ((cents || 0) / 100).toFixed(2);
+  const dollars = ((cents || 0) / 100).toFixed(2);
+  const [intPart, decPart] = dollars.split('.');
+  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `$${withCommas}.${decPart}`;
 }
 
 function fmtDate(iso) {
@@ -487,7 +496,14 @@ async function loadAndRender() {
     allLinks = data.links || [];
 
     const remembered = getRememberedUser();
-    currentUserName.textContent = remembered ? `${remembered.firstName} ${remembered.lastName}` : '';
+    const displayName = remembered ? `${remembered.firstName} ${remembered.lastName}` : '';
+    currentUserName.textContent = displayName;
+    currentUserAvatar.textContent = displayName
+      .split(' ')
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0].toUpperCase())
+      .join('');
     jobCountNote.textContent = data.isAdmin
       ? `Showing all ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} on the Monday board (admin access).`
       : data.jobCount
@@ -922,6 +938,9 @@ changePinToggleButton.addEventListener('click', () => {
 });
 
 cancelChangePinButton.addEventListener('click', () => {
+  changePinPanel.style.display = 'none';
+});
+cancelChangePinButtonTop.addEventListener('click', () => {
   changePinPanel.style.display = 'none';
 });
 

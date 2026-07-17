@@ -199,14 +199,78 @@
   }
   button.link-button:hover { color: var(--black); text-decoration: underline; }
 
-  .user-info {
+  /* --- Header actions (user chip + icon buttons) --- */
+  .header-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+
+  .user-chip {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
-    font-size: 12.5px;
-    color: var(--gray-500);
+    gap: 10px;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: 999px;
+    padding: 6px 16px 6px 6px;
   }
-  .user-info button.link-button { display: inline; width: auto; margin: 0; }
+  .user-avatar {
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: linear-gradient(160deg, var(--gold) 0%, var(--gold-dark) 100%);
+    color: var(--white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 800;
+    font-family: 'Inter Tight', 'Inter', sans-serif;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  }
+  .user-chip-text { display: flex; flex-direction: column; line-height: 1.3; }
+  .user-chip-text strong { font-size: 12.5px; color: var(--black); font-weight: 700; }
+  .user-chip-links { font-size: 11.5px; color: var(--gray-500); display: flex; align-items: center; gap: 6px; }
+  .chip-divider { color: var(--gray-300); }
+  button.chip-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--gray-500);
+    cursor: pointer;
+    transition: color 0.15s ease;
+  }
+  button.chip-link:hover { color: var(--gold-dark); text-decoration: underline; }
+
+  .action-group { display: flex; align-items: center; gap: 8px; }
+  button.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--white);
+    border: 1.5px solid var(--gray-200);
+    border-radius: var(--radius-sm);
+    padding: 9px 15px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--gray-700);
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease, color 0.15s ease;
+  }
+  button.icon-btn svg { flex-shrink: 0; }
+  button.icon-btn:hover { background: var(--gray-50); border-color: var(--gray-300); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+  button.icon-btn:active { transform: scale(0.97); }
+  button.icon-btn.icon-only { padding: 9px; color: var(--gray-500); }
+  button.icon-btn.primary-action {
+    background: linear-gradient(180deg, #24252b 0%, var(--soft-black) 100%);
+    border-color: transparent;
+    color: var(--white);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2), 0 6px 14px -6px rgba(0,0,0,0.35);
+  }
+  button.icon-btn.primary-action:hover { background: linear-gradient(180deg, #2c2d34 0%, #141517 100%); border-color: transparent; }
 
   /* --- Hub view --- */
   .hub-header {
@@ -356,13 +420,35 @@
     background: var(--gray-50);
     border: 1px solid var(--gray-150);
     border-radius: var(--radius-md);
-    padding: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5) var(--sp-5);
     margin-bottom: var(--sp-5);
+    max-width: 360px;
   }
-  .change-pin-panel .field-row { display: flex; gap: var(--sp-3); flex-wrap: wrap; }
-  .change-pin-panel .field-row > div { flex: 1; min-width: 160px; }
-  .change-pin-panel .field-row .pin-boxes { justify-content: flex-start; }
-  .panel-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); align-items: center; }
+  .change-pin-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--sp-4);
+    padding-bottom: var(--sp-3);
+    border-bottom: 1px solid var(--gray-150);
+  }
+  .panel-close-btn {
+    background: var(--white);
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--gray-500);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .panel-close-btn:hover { background: var(--gray-100); color: var(--black); }
+  .pin-field-stack { display: flex; flex-direction: column; gap: var(--sp-4); }
+  .pin-field-stack .pin-boxes { justify-content: flex-start; }
+  .panel-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); align-items: center; }
   .panel-actions button.primary { margin-top: 0; width: auto; padding: 11px 20px; }
   .panel-actions button.secondary { padding: 0 16px; height: 42px; }
 
@@ -533,18 +619,18 @@
       <div id="step-pin-login" style="display:none;">
         <div class="subtitle" id="pin-login-greeting"></div>
         <label class="field-label" for="pin-login-field">PIN</label>
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-login-field" class="field-input" placeholder="••••" maxlength="6" />
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-login-field" class="field-input" placeholder="••••" maxlength="4" />
         <button type="button" class="primary" id="login-button">Unlock</button>
         <button type="button" class="link-button" id="switch-user-button">Not you? Switch user</button>
       </div>
 
       <!-- Step 2b: first-time visitor creates a PIN -->
       <div id="step-pin-create" style="display:none;">
-        <div class="subtitle">We haven't seen that name before — create a 4-6 digit PIN you'll use to log in next time.</div>
+        <div class="subtitle">We haven't seen that name before — create a 4-digit PIN you'll use to log in next time.</div>
         <label class="field-label" for="pin-create-field">Create PIN</label>
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-create-field" class="field-input" placeholder="••••" maxlength="6" />
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-create-field" class="field-input" placeholder="••••" maxlength="4" />
         <label class="field-label" for="pin-confirm-field">Confirm PIN</label>
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-confirm-field" class="field-input" placeholder="••••" maxlength="6" />
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="pin-confirm-field" class="field-input" placeholder="••••" maxlength="4" />
         <button type="button" class="primary" id="create-pin-button">Create Account</button>
         <button type="button" class="link-button" id="back-to-name-button">Back</button>
       </div>
@@ -565,30 +651,53 @@
           <div class="eyebrow">Payment Links Hub</div>
           <h1>Sent Links</h1>
         </div>
-        <div style="display:flex; align-items:center; gap: 12px;">
-          <div class="user-info">
-            Logged in as <strong id="current-user-name"></strong> · <button type="button" class="link-button" id="change-pin-toggle-button" style="display:inline;width:auto;margin:0;">Change PIN</button> · <button type="button" class="link-button" id="logout-button">Log out</button>
+        <div class="header-actions">
+          <div class="user-chip">
+            <span class="user-avatar" id="current-user-avatar"></span>
+            <span class="user-chip-text">
+              <strong id="current-user-name"></strong>
+              <span class="user-chip-links">
+                <button type="button" class="chip-link" id="change-pin-toggle-button">Change PIN</button>
+                <span class="chip-divider">·</span>
+                <button type="button" class="chip-link" id="logout-button">Log out</button>
+              </span>
+            </span>
           </div>
-          <button type="button" class="secondary" id="admin-button" style="display:none;">Admin</button>
-          <button type="button" class="secondary" id="generate-link-button">+ Generate Link</button>
-          <button type="button" class="secondary" id="refresh-button">Refresh</button>
+          <div class="action-group">
+            <button type="button" class="icon-btn" id="admin-button" style="display:none;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"></path></svg>
+              Admin
+            </button>
+            <button type="button" class="icon-btn primary-action" id="generate-link-button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+              Generate Link
+            </button>
+            <button type="button" class="icon-btn icon-only" id="refresh-button" title="Refresh">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 3v6h-6"></path></svg>
+            </button>
+          </div>
         </div>
       </div>
 
       <div class="change-pin-panel" id="change-pin-panel">
-        <div class="eyebrow" style="margin-bottom: var(--sp-2);">Change Your PIN</div>
-        <div class="field-row">
+        <div class="change-pin-panel-header">
+          <div class="eyebrow" style="margin:0;">Change Your PIN</div>
+          <button type="button" class="panel-close-btn" id="cancel-change-pin-button-top" aria-label="Close" title="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <div class="pin-field-stack">
           <div>
             <label class="field-label" for="current-pin-field">Current PIN</label>
-            <input type="password" inputmode="numeric" pattern="[0-9]*" id="current-pin-field" class="field-input" placeholder="••••" maxlength="6" />
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="current-pin-field" class="field-input" placeholder="••••" maxlength="4" />
           </div>
           <div>
             <label class="field-label" for="new-pin-field">New PIN</label>
-            <input type="password" inputmode="numeric" pattern="[0-9]*" id="new-pin-field" class="field-input" placeholder="••••" maxlength="6" />
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="new-pin-field" class="field-input" placeholder="••••" maxlength="4" />
           </div>
           <div>
             <label class="field-label" for="confirm-new-pin-field">Confirm New PIN</label>
-            <input type="password" inputmode="numeric" pattern="[0-9]*" id="confirm-new-pin-field" class="field-input" placeholder="••••" maxlength="6" />
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="confirm-new-pin-field" class="field-input" placeholder="••••" maxlength="4" />
           </div>
         </div>
         <div class="error-message" id="change-pin-error"></div>
@@ -718,7 +827,7 @@
           </div>
           <div>
             <label class="field-label" for="new-user-pin">Starting PIN</label>
-            <input type="password" inputmode="numeric" pattern="[0-9]*" id="new-user-pin" class="field-input" placeholder="••••" maxlength="6" />
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="new-user-pin" class="field-input" placeholder="••••" maxlength="4" />
           </div>
         </div>
         <div class="checkbox-row">
@@ -733,7 +842,7 @@
       <div class="reset-pin-panel" id="reset-pin-panel">
         <div class="eyebrow" style="margin-bottom: var(--sp-2);">Reset PIN for <span id="reset-pin-target-name"></span></div>
         <label class="field-label" for="reset-pin-field">New PIN</label>
-        <input type="password" inputmode="numeric" pattern="[0-9]*" id="reset-pin-field" class="field-input" placeholder="••••" maxlength="6" style="max-width:200px;" />
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="reset-pin-field" class="field-input" placeholder="••••" maxlength="4" style="max-width:200px;" />
         <div class="error-message" id="reset-pin-error"></div>
         <div class="success-message" id="reset-pin-success"></div>
         <div class="panel-actions">
