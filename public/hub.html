@@ -435,10 +435,12 @@
     white-space: nowrap;
   }
 
-  .row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
   .row-actions button {
-    padding: 7px 12px;
+    padding: 0 10px;
+    height: 30px;
     font-size: 12px;
+    flex-shrink: 0;
   }
   .row-actions.invoice-actions { flex-wrap: nowrap; }
   .row-actions.invoice-actions .secondary { padding: 0 12px; height: 30px; font-size: 12px; flex-shrink: 0; }
