@@ -378,7 +378,7 @@ function initLogin() {
     pinLoginGreeting.textContent = `Welcome back, ${remembered.firstName}.`;
     showLogin();
     showStep('pin-login');
-    pinLoginField.focus();
+    pinLoginField.focusFirstBox();
   } else {
     showLogin();
     showStep('name');
@@ -410,10 +410,10 @@ continueNameButton.addEventListener('click', async () => {
     if (data.userExists) {
       pinLoginGreeting.textContent = `Welcome back, ${firstName}.`;
       showStep('pin-login');
-      pinLoginField.focus();
+      pinLoginField.focusFirstBox();
     } else {
       showStep('pin-create');
-      pinCreateField.focus();
+      pinCreateField.focusFirstBox();
     }
   } catch (err) {
     loginError.textContent = err.message;
@@ -1000,7 +1000,7 @@ changePinToggleButton.addEventListener('click', () => {
   currentPinField.value = '';
   newPinField.value = '';
   confirmNewPinField.value = '';
-  if (!showing) currentPinField.focus();
+  if (!showing) currentPinField.focusFirstBox();
 });
 
 cancelChangePinButton.addEventListener('click', () => {
