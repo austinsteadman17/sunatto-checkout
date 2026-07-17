@@ -470,6 +470,11 @@ loginButton.addEventListener('click', async () => {
     loginButton.disabled = false;
     loginButton.textContent = 'Unlock';
     pinLoginField.value = '';
+    // Clearing the boxes leaves focus sitting on whichever box it was
+    // last on (box 4, since that's what triggers auto-submit) — after a
+    // wrong PIN, put the cursor back at box 1 so retyping doesn't need a
+    // manual click first.
+    pinLoginField.focusFirstBox();
   }
 });
 
@@ -497,6 +502,9 @@ createPinButton.addEventListener('click', async () => {
   }
   if (pin !== confirmPin) {
     loginError.textContent = 'PINs don’t match.';
+    pinCreateField.value = '';
+    pinConfirmField.value = '';
+    pinCreateField.focusFirstBox();
     return;
   }
 
@@ -518,11 +526,12 @@ createPinButton.addEventListener('click', async () => {
     await loadAndRender();
   } catch (err) {
     loginError.textContent = err.message;
+    pinCreateField.value = '';
+    pinConfirmField.value = '';
+    pinCreateField.focusFirstBox();
   } finally {
     createPinButton.disabled = false;
     createPinButton.textContent = 'Create Account';
-    pinCreateField.value = '';
-    pinConfirmField.value = '';
   }
 });
 
@@ -594,18 +603,17 @@ async function loadAndRender() {
 
     hubError.textContent = '';
     await refreshAdminButton();
-    showHub();
+
+    // Sent Links' own table is rendered now too (even though it isn't
+    // the visible view below) so it's instantly ready the moment someone
+    // clicks over to it — same "render hidden, show later" trick used
+    // for Invoices pre-loading before Invoices became the default view.
     renderTable();
 
-    // Pre-load Invoices in the background so a search typed here can
-    // cross-reference them immediately, without waiting for the Invoices
-    // tab to be opened first. If a search is already in progress when
-    // this resolves, refresh the results so it isn't missing matches.
-    fetchInvoices().then(() => {
-      if (hubView.style.display !== 'none' && searchInput.value.trim()) {
-        renderTable();
-      }
-    }).catch(() => {});
+    // Invoices is the primary view shown right after login — Sent Links
+    // is the secondary one, reached via its own nav button from here.
+    showInvoices();
+    await fetchInvoices();
   } catch (err) {
     if (err.message === 'unauthorized') {
       const remembered = getRememberedUser();
@@ -614,13 +622,16 @@ async function loadAndRender() {
         pinLoginGreeting.textContent = `Welcome back, ${remembered.firstName}. Please log in again.`;
         showLogin();
         showStep('pin-login');
+        pinLoginField.focusFirstBox();
       } else {
         showLogin();
         showStep('name');
       }
     } else {
+      const remembered = getRememberedUser();
       showLogin();
-      showStep(getRememberedUser() ? 'pin-login' : 'name');
+      showStep(remembered ? 'pin-login' : 'name');
+      if (remembered) pinLoginField.focusFirstBox();
       loginError.textContent = err.message;
     }
   }
@@ -697,6 +708,7 @@ function renderTable() {
           <div class="row-actions">
             <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
             <button type="button" class="secondary resend-btn" data-id="${link.id}" ${canResend ? '' : 'disabled title="No email on file"'}>Resend</button>
+            ${currentIsAdmin ? `<button type="button" class="secondary void-btn" data-id="${link.id}" data-name="${escapeHtml(link.customerName || 'this link')}" title="Remove a stale/incorrect link from the hub">Void</button>` : ''}
           </div>
         </td>
       </tr>
@@ -724,6 +736,9 @@ function renderTable() {
   });
   tableWrap.querySelectorAll('.resend-btn').forEach((btn) => {
     btn.addEventListener('click', () => resendLink(btn));
+  });
+  tableWrap.querySelectorAll('.void-btn').forEach((btn) => {
+    btn.addEventListener('click', () => voidLink(btn));
   });
 }
 
@@ -761,6 +776,45 @@ async function resendLink(btn) {
     hubError.textContent = err.message;
     btn.textContent = original;
     btn.disabled = false;
+  }
+}
+
+// Admin-only: pulls a stale/incorrect payment link record out of the hub
+// entirely (e.g. one generated before financing terms were finalized that
+// never actually reflected a real request sent to the homeowner). This
+// only hides the record here — it has no effect on the underlying Stripe
+// Checkout Session, which was already either used or abandoned.
+async function voidLink(btn) {
+  const id = btn.getAttribute('data-id');
+  const name = btn.getAttribute('data-name') || 'this link';
+  const confirmed = await showConfirmModal({
+    title: 'Void this payment link?',
+    message: `Remove ${name}'s payment link from the hub? This won't cancel or affect the actual Stripe checkout page if it was already sent — it just clears this stale record out of view here.`,
+    confirmLabel: 'Void link',
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  hubError.textContent = '';
+  invoicesError.textContent = '';
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Voiding…';
+
+  try {
+    const res = await fetch(`/api/links/${id}/void`, {
+      method: 'POST',
+      headers: { 'X-Hub-Session': getSessionToken() },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not void link.');
+    allLinks = allLinks.filter((l) => l.id !== id);
+    renderTable();
+    renderInvoicesTable();
+  } catch (err) {
+    hubError.textContent = err.message;
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 
@@ -1057,6 +1111,9 @@ savePinButton.addEventListener('click', async () => {
   }
   if (newPin !== confirmPin) {
     changePinError.textContent = 'New PINs don’t match.';
+    newPinField.value = '';
+    confirmNewPinField.value = '';
+    newPinField.focusFirstBox();
     return;
   }
 
@@ -1078,7 +1135,11 @@ savePinButton.addEventListener('click', async () => {
     newPinField.value = '';
     confirmNewPinField.value = '';
   } catch (err) {
+    // Almost always means the current PIN was wrong — clear it and put
+    // the cursor back at box 1 so retyping doesn't need a manual click.
     changePinError.textContent = err.message;
+    currentPinField.value = '';
+    currentPinField.focusFirstBox();
   } finally {
     savePinButton.disabled = false;
     savePinButton.textContent = 'Save New PIN';
@@ -1168,6 +1229,7 @@ function openResetPinPanel(userId, name) {
   resetPinSuccess.textContent = '';
   resetPinPanel.style.display = 'block';
   resetPinPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  resetPinField.focusFirstBox();
 }
 
 cancelResetPinButton.addEventListener('click', () => {
@@ -1438,6 +1500,7 @@ function renderCombinedRow(entry) {
           <div class="row-actions">
             <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
             <button type="button" class="secondary resend-btn" data-id="${link.id}" ${canResend ? '' : 'disabled title="No email on file"'}>Resend</button>
+            ${currentIsAdmin ? `<button type="button" class="secondary void-btn" data-id="${link.id}" data-name="${escapeHtml(link.customerName || 'this link')}" title="Remove a stale/incorrect link from the hub">Void</button>` : ''}
           </div>
         </td>
       </tr>
@@ -1510,6 +1573,7 @@ function renderCombinedTable(container, query) {
 
   container.querySelectorAll('.copy-btn').forEach((btn) => btn.addEventListener('click', () => copyLink(btn)));
   container.querySelectorAll('.resend-btn').forEach((btn) => btn.addEventListener('click', () => resendLink(btn)));
+  container.querySelectorAll('.void-btn').forEach((btn) => btn.addEventListener('click', () => voidLink(btn)));
   container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
 }
 
