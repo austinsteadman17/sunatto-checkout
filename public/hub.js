@@ -1331,23 +1331,40 @@ async function fetchInvoices() {
   }
 }
 
+// Two rows, same 4 columns (Drafts / Sent, unpaid / Processing / Paid):
+// top row is how many invoices are in that state, bottom row is the $
+// total for that exact same set, so each column reads top-to-bottom as
+// "how many, how much" instead of a separate one-off "Outstanding" pill.
 function renderInvoicesSummary(invoices) {
   const draft = invoices.filter((i) => i.status === 'draft');
-  const open = invoices.filter((i) => i.status === 'open');
+  const processing = invoices.filter((i) => i.paymentProcessing);
+  // "Sent, unpaid" excludes ones already processing a payment — otherwise
+  // the same invoice would silently double-count across both columns,
+  // and staff would still read it as "nothing's happened yet."
+  const open = invoices.filter((i) => i.status === 'open' && !i.paymentProcessing);
   const paid = invoices.filter((i) => i.status === 'paid');
-  const outstanding = open.reduce((sum, i) => sum + (i.amountDueCents || 0), 0);
+
+  const draftCents = draft.reduce((sum, i) => sum + (i.totalCents || 0), 0);
+  const openCents = open.reduce((sum, i) => sum + (i.amountDueCents || 0), 0);
+  const processingCents = processing.reduce((sum, i) => sum + (i.amountDueCents || 0), 0);
+  const paidCents = paid.reduce((sum, i) => sum + (i.amountPaidCents || i.totalCents || 0), 0);
 
   const icon = (path) => `<span class="pill-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
   const iconDraft = icon('<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>');
   const iconClock = icon('<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path>');
+  const iconProcessing = icon('<path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 3v6h-6"></path>');
   const iconCheck = icon('<circle cx="12" cy="12" r="9"></circle><path d="m8.5 12.5 2.5 2.5 5-5"></path>');
   const iconMoney = icon('<rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle>');
 
   invoicesSummaryStrip.innerHTML = `
     <div class="summary-pill"><span class="pill-icon">${iconDraft}</span><div><strong>${draft.length}</strong>Drafts</div></div>
     <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${open.length}</strong>Sent, unpaid</div></div>
+    <div class="summary-pill icon-processing">${iconProcessing}<div><strong>${processing.length}</strong>Processing</div></div>
     <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paid.length}</strong>Paid</div></div>
-    <div class="summary-pill icon-money">${iconMoney}<div><strong>${fmtMoney(outstanding)}</strong>Outstanding</div></div>
+    <div class="summary-pill money"><span class="pill-icon">${iconMoney}</span><div><strong>${fmtMoney(draftCents)}</strong>Draft value</div></div>
+    <div class="summary-pill money icon-unpaid">${iconMoney}<div><strong>${fmtMoney(openCents)}</strong>Unpaid value</div></div>
+    <div class="summary-pill money icon-processing">${iconMoney}<div><strong>${fmtMoney(processingCents)}</strong>Processing value</div></div>
+    <div class="summary-pill money icon-paid">${iconMoney}<div><strong>${fmtMoney(paidCents)}</strong>Paid value</div></div>
   `;
 }
 
@@ -1364,6 +1381,18 @@ const INVOICE_STATUS_LABELS = {
   uncollectible: 'Uncollectible',
   void: 'Void',
 };
+
+// invoice.status alone can't tell "nobody has done anything yet" apart
+// from "the customer already submitted payment and it's just waiting
+// to clear" (e.g. a multi-day ACH bank debit) — both look like "open"/
+// "Sent". The server flags the latter as paymentProcessing so we can
+// show a distinct "Processing" badge and stop offering Resend on it.
+function invoiceStatusInfo(invoice) {
+  if (invoice.paymentProcessing) {
+    return { label: 'Processing', badgeClass: 'processing' };
+  }
+  return { label: INVOICE_STATUS_LABELS[invoice.status] || invoice.status, badgeClass: invoice.status };
+}
 
 // --- Combined search across Payment Links + Invoices ---
 //
@@ -1416,14 +1445,20 @@ function renderCombinedRow(entry) {
   }
 
   const invoice = entry.item;
-  const statusLabel = INVOICE_STATUS_LABELS[invoice.status] || invoice.status;
-  const statusBadge = `<span class="badge ${invoice.status}">${statusLabel}</span>`;
+  const { label: statusLabel, badgeClass } = invoiceStatusInfo(invoice);
+  const statusBadge = `<span class="badge ${badgeClass}">${statusLabel}</span>`;
   const typeBadge = invoice.type
     ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
     : '—';
   const hostedUrl = invoice.hostedInvoiceUrl;
   const editUrl = invoice.dashboardUrl;
-  const canSend = invoice.status === 'draft' || invoice.status === 'open';
+  const canSend = !invoice.paymentProcessing && (invoice.status === 'draft' || invoice.status === 'open');
+  const sendLabel = invoice.paymentProcessing
+    ? 'Processing'
+    : invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent';
+  const sendTitle = invoice.paymentProcessing
+    ? 'Payment already submitted and clearing — no need to resend.'
+    : '';
 
   return `
     <tr data-id="${invoice.id}" data-source="invoice">
@@ -1441,7 +1476,7 @@ function renderCombinedRow(entry) {
         <div class="row-actions invoice-actions">
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
           ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
-          <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'}>${invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent'}</button>
+          <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
         </div>
       </td>
     </tr>
@@ -1498,14 +1533,20 @@ function renderInvoicesTable() {
   }
 
   const rows = invoices.map((invoice) => {
-    const statusLabel = INVOICE_STATUS_LABELS[invoice.status] || invoice.status;
-    const statusBadge = `<span class="badge ${invoice.status}">${statusLabel}</span>`;
+    const { label: statusLabel, badgeClass } = invoiceStatusInfo(invoice);
+    const statusBadge = `<span class="badge ${badgeClass}">${statusLabel}</span>`;
     const typeBadge = invoice.type
       ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
       : '—';
     const hostedUrl = invoice.hostedInvoiceUrl;
     const editUrl = invoice.dashboardUrl;
-    const canSend = invoice.status === 'draft' || invoice.status === 'open';
+    const canSend = !invoice.paymentProcessing && (invoice.status === 'draft' || invoice.status === 'open');
+    const sendLabel = invoice.paymentProcessing
+      ? 'Processing'
+      : invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent';
+    const sendTitle = invoice.paymentProcessing
+      ? 'Payment already submitted and clearing — no need to resend.'
+      : '';
 
     return `
       <tr data-id="${invoice.id}">
@@ -1522,7 +1563,7 @@ function renderInvoicesTable() {
           <div class="row-actions invoice-actions">
             ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
             ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
-            <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'}>${invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent'}</button>
+            <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
           </div>
         </td>
       </tr>

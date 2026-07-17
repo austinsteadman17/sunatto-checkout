@@ -40,6 +40,9 @@
     --red: #C0392B;
     --red-light: #FDECEA;
 
+    --blue: #2563EB;
+    --blue-light: #EAF1FE;
+
     --sp-1: 8px;
     --sp-2: 12px;
     --sp-3: 16px;
@@ -296,6 +299,20 @@
     margin-bottom: var(--sp-5);
     flex-wrap: wrap;
   }
+  /* Invoices summary: top row is counts (Drafts / Sent, unpaid /
+     Processing / Paid), bottom row is the $ total for that exact same
+     column, so each column reads top-to-bottom as "how many, how much." */
+  .summary-strip.two-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--sp-3);
+  }
+  .summary-strip.two-row .summary-pill { min-width: 0; }
+  .summary-strip.two-row .summary-pill.money strong { font-size: 15px; }
+  .summary-strip.two-row .summary-pill.money { color: var(--gray-500); }
+  @media (max-width: 720px) {
+    .summary-strip.two-row { grid-template-columns: repeat(2, 1fr); }
+  }
   .summary-pill {
     flex: 1;
     min-width: 130px;
@@ -326,6 +343,7 @@
   }
   .summary-pill.icon-paid .pill-icon { background: var(--green-light); color: var(--green); }
   .summary-pill.icon-unpaid .pill-icon { background: var(--gold-light); color: var(--gold-dark); }
+  .summary-pill.icon-processing .pill-icon { background: var(--blue-light); color: var(--blue); }
   .summary-pill.icon-money .pill-icon { background: var(--gray-800); color: var(--white); }
   .summary-pill strong { display: block; font-size: 19px; color: var(--black); font-weight: 800; font-family: 'Inter Tight', 'Inter', sans-serif; line-height: 1.2; }
 
@@ -396,6 +414,7 @@
   .badge.balance { background: var(--gray-100); color: var(--gray-700); }
   .badge.draft { background: var(--gray-100); color: var(--gray-600); }
   .badge.open { background: var(--gold-light); color: var(--gold-dark); }
+  .badge.processing { background: var(--blue-light); color: var(--blue); }
   .badge.void, .badge.uncollectible { background: var(--red-light); color: var(--red); }
 
   .source-tag {
@@ -995,7 +1014,7 @@
 
       <div class="subtitle" id="invoices-count-note"></div>
 
-      <div class="summary-strip" id="invoices-summary-strip"></div>
+      <div class="summary-strip two-row" id="invoices-summary-strip"></div>
 
       <div class="toolbar">
         <input type="text" id="invoices-search-input" class="field-input" placeholder="Search payment links & invoices by name or address…" />
