@@ -107,6 +107,103 @@ const cancelResetPinButton = document.getElementById('cancel-reset-pin-button');
 const adminUsersError = document.getElementById('admin-users-error');
 const adminUsersTableWrap = document.getElementById('admin-users-table-wrap');
 
+// --- PIN box enhancement --------------------------------------------
+// Purely visual: turns each real `<input type="password" maxlength="N">`
+// PIN field into a row of single-digit boxes, without changing how the
+// rest of this file reads/writes those fields. The original input stays
+// in the DOM (just hidden) and remains the single source of truth — its
+// `value` property is overridden so that setting it from anywhere else
+// in this file (e.g. clearing a field after an error) automatically
+// updates the boxes too, and typing into the boxes writes back through
+// to the original input (including firing a real `input` event), so any
+// existing `.value` reads or `addEventListener('input', ...)` listeners
+// elsewhere keep working with zero changes.
+function enhancePinInput(input) {
+  if (!input || input.dataset.enhanced) return;
+  input.dataset.enhanced = 'true';
+
+  const max = parseInt(input.getAttribute('maxlength') || '6', 10);
+  const wrap = document.createElement('div');
+  wrap.className = 'pin-boxes';
+
+  const boxes = [];
+  for (let i = 0; i < max; i += 1) {
+    const box = document.createElement('input');
+    box.type = 'password';
+    box.inputMode = 'numeric';
+    box.setAttribute('pattern', '[0-9]*');
+    box.maxLength = 1;
+    box.autocomplete = 'one-time-code';
+    box.className = 'pin-box';
+    boxes.push(box);
+    wrap.appendChild(box);
+  }
+
+  function writeThrough() {
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    nativeSetter.call(input, boxes.map((b) => b.value).join(''));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  boxes.forEach((box, i) => {
+    box.addEventListener('input', () => {
+      box.value = box.value.replace(/[^0-9]/g, '').slice(-1);
+      box.classList.toggle('filled', !!box.value);
+      if (box.value && i < boxes.length - 1) boxes[i + 1].focus();
+      writeThrough();
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' && !box.value && i > 0) {
+        boxes[i - 1].focus();
+      }
+      if (e.key === 'Enter') {
+        const card = input.closest('.card');
+        const btn = card && card.querySelector('button.primary');
+        if (btn && !btn.disabled) btn.click();
+      }
+    });
+    box.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData).getData('text').replace(/[^0-9]/g, '');
+      boxes.forEach((b, idx) => { b.value = text[idx] || ''; b.classList.toggle('filled', !!b.value); });
+      const nextEmpty = boxes.findIndex((b) => !b.value);
+      boxes[nextEmpty === -1 ? boxes.length - 1 : nextEmpty].focus();
+      writeThrough();
+    });
+  });
+
+  // Any code elsewhere that sets `input.value = ...` directly (clearing
+  // the field after a failed attempt, etc.) should reflect in the boxes.
+  const nativeDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  Object.defineProperty(input, 'value', {
+    configurable: true,
+    get() { return nativeDescriptor.get.call(input); },
+    set(v) {
+      nativeDescriptor.set.call(input, v);
+      const chars = String(v || '').split('');
+      boxes.forEach((b, i) => {
+        b.value = chars[i] || '';
+        b.classList.toggle('filled', !!b.value);
+      });
+    },
+  });
+
+  input.style.display = 'none';
+  input.insertAdjacentElement('afterend', wrap);
+  input.focusFirstBox = () => boxes[0].focus();
+}
+
+[
+  pinLoginField,
+  pinCreateField,
+  pinConfirmField,
+  currentPinField,
+  newPinField,
+  confirmNewPinField,
+  newUserPinField,
+  resetPinField,
+].forEach(enhancePinInput);
+
 let allLinks = [];
 let pendingName = { firstName: '', lastName: '' }; // held between the name step and the pin steps
 
@@ -427,12 +524,18 @@ function renderSummary(links) {
   const collected = paid.reduce((sum, l) => sum + (l.amountCents || 0), 0);
   const outstanding = unpaid.reduce((sum, l) => sum + (l.amountCents || 0), 0);
 
+  const icon = (path) => `<span class="pill-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
+  const iconSend = icon('<path d="M22 2 11 13"></path><path d="M22 2 15 22l-4-9-9-4 20-7Z"></path>');
+  const iconCheck = icon('<circle cx="12" cy="12" r="9"></circle><path d="m8.5 12.5 2.5 2.5 5-5"></path>');
+  const iconClock = icon('<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path>');
+  const iconMoney = icon('<rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle>');
+
   summaryStrip.innerHTML = `
-    <div class="summary-pill"><strong>${links.length}</strong>Links sent</div>
-    <div class="summary-pill"><strong>${paid.length}</strong>Paid</div>
-    <div class="summary-pill"><strong>${unpaid.length}</strong>Unpaid</div>
-    <div class="summary-pill"><strong>${fmtMoney(collected)}</strong>Collected</div>
-    <div class="summary-pill"><strong>${fmtMoney(outstanding)}</strong>Outstanding</div>
+    <div class="summary-pill">${iconSend}<div><strong>${links.length}</strong>Links sent</div></div>
+    <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paid.length}</strong>Paid</div></div>
+    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${unpaid.length}</strong>Unpaid</div></div>
+    <div class="summary-pill icon-money">${iconMoney}<div><strong>${fmtMoney(collected)}</strong>Collected</div></div>
+    <div class="summary-pill">${iconMoney}<div><strong>${fmtMoney(outstanding)}</strong>Outstanding</div></div>
   `;
 }
 
