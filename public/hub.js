@@ -330,6 +330,15 @@ function fmtDate(iso) {
     ' ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
+// Short form ("Jul 17") used in table date columns — the full
+// date+time from fmtDate() takes up more column width than the date
+// itself is usually worth in a list view.
+function fmtDateShort(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 function escapeHtml(str) {
   return String(str || '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -688,8 +697,11 @@ function renderTable() {
       ? '<span class="badge paid">Paid</span>'
       : '<span class="badge unpaid">Unpaid</span>';
     const sentInfo = link.sentCount > 1
-      ? `${fmtDate(link.lastSentAt)} <span class="cust-sub">(sent ${link.sentCount}×)</span>`
-      : fmtDate(link.lastSentAt);
+      ? `${fmtDateShort(link.lastSentAt)} <span class="cust-sub">(sent ${link.sentCount}×)</span>`
+      : fmtDateShort(link.lastSentAt);
+    const mondayStatus = link.mondayStatus
+      ? `<span class="badge monday-status">${escapeHtml(link.mondayStatus)}</span>`
+      : '—';
 
     const canResend = !!link.customerEmail;
 
@@ -703,6 +715,7 @@ function renderTable() {
         <td><span class="badge ${link.type}">${typeLabel}</span></td>
         <td>${fmtMoney(link.amountCents)}</td>
         <td>${statusBadge}</td>
+        <td>${mondayStatus}</td>
         <td>${sentInfo}</td>
         <td>
           <div class="row-actions">
@@ -723,6 +736,7 @@ function renderTable() {
           <th>Type</th>
           <th>Amount</th>
           <th>Status</th>
+          <th>Monday Status</th>
           <th>Last Sent</th>
           <th>Actions</th>
         </tr>
@@ -1484,6 +1498,9 @@ function renderCombinedRow(entry) {
       ? '<span class="badge paid">Paid</span>'
       : '<span class="badge unpaid">Unpaid</span>';
     const canResend = !!link.customerEmail;
+    const linkMondayStatus = link.mondayStatus
+      ? `<span class="badge monday-status">${escapeHtml(link.mondayStatus)}</span>`
+      : '—';
     return `
       <tr data-id="${link.id}" data-source="link">
         <td>
@@ -1495,7 +1512,8 @@ function renderCombinedRow(entry) {
         <td><span class="badge ${link.type}">${typeLabel}</span></td>
         <td>${fmtMoney(link.amountCents)}</td>
         <td>${statusBadge}</td>
-        <td>${fmtDate(link.lastSentAt)}</td>
+        <td>${linkMondayStatus}</td>
+        <td>${fmtDateShort(link.lastSentAt)}</td>
         <td>
           <div class="row-actions">
             <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
@@ -1522,6 +1540,9 @@ function renderCombinedRow(entry) {
   const sendTitle = invoice.paymentProcessing
     ? 'Payment already submitted and clearing — no need to resend.'
     : '';
+  const invoiceMondayStatus = invoice.mondayStatus
+    ? `<span class="badge monday-status">${escapeHtml(invoice.mondayStatus)}</span>`
+    : '—';
 
   return `
     <tr data-id="${invoice.id}" data-source="invoice">
@@ -1534,7 +1555,8 @@ function renderCombinedRow(entry) {
       <td>${typeBadge}</td>
       <td>${fmtMoney(invoice.totalCents)}</td>
       <td>${statusBadge}</td>
-      <td>${fmtDate(invoice.created)}</td>
+      <td>${invoiceMondayStatus}</td>
+      <td>${fmtDateShort(invoice.created)}</td>
       <td>
         <div class="row-actions invoice-actions">
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
@@ -1563,6 +1585,7 @@ function renderCombinedTable(container, query) {
           <th>Type</th>
           <th>Amount</th>
           <th>Status</th>
+          <th>Monday Status</th>
           <th>Date</th>
           <th>Actions</th>
         </tr>
@@ -1612,6 +1635,10 @@ function renderInvoicesTable() {
       ? 'Payment already submitted and clearing — no need to resend.'
       : '';
 
+    const mondayStatus = invoice.mondayStatus
+      ? `<span class="badge monday-status">${escapeHtml(invoice.mondayStatus)}</span>`
+      : '—';
+
     return `
       <tr data-id="${invoice.id}">
         <td>
@@ -1622,7 +1649,8 @@ function renderInvoicesTable() {
         <td>${typeBadge}</td>
         <td>${fmtMoney(invoice.totalCents)}</td>
         <td>${statusBadge}</td>
-        <td>${fmtDate(invoice.created)}</td>
+        <td>${mondayStatus}</td>
+        <td>${fmtDateShort(invoice.created)}</td>
         <td>
           <div class="row-actions invoice-actions">
             ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
@@ -1642,6 +1670,7 @@ function renderInvoicesTable() {
           <th>Type</th>
           <th>Amount</th>
           <th>Status</th>
+          <th>Monday Status</th>
           <th>Created</th>
           <th>Actions</th>
         </tr>

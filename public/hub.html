@@ -75,7 +75,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  .wrap { max-width: 1040px; margin: 0 auto; }
+  .wrap { max-width: 1280px; margin: 0 auto; }
   .wrap.narrow { max-width: 420px; }
 
   .brand { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-6); justify-content: center; }
@@ -366,6 +366,7 @@
   button.secondary:active:not(:disabled) { transform: scale(0.97); }
   button.secondary:disabled { color: var(--gray-400); border-color: var(--gray-150); cursor: not-allowed; }
 
+  #table-wrap, #invoices-table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: separate; border-spacing: 0; }
   thead th {
     text-align: left;
@@ -416,6 +417,10 @@
   .badge.open { background: var(--gold-light); color: var(--gold-dark); }
   .badge.processing { background: var(--blue-light); color: var(--blue); }
   .badge.void, .badge.uncollectible { background: var(--red-light); color: var(--red); }
+  /* Monday board group names vary a lot in length/wording ("Installed -
+     Review/Corrections") — keep this visually quiet/neutral rather than
+     competing with our own fixed-vocabulary status badges above. */
+  .badge.monday-status { background: var(--gray-100); color: var(--gray-700); white-space: nowrap; }
 
   .source-tag {
     display: inline-block;
