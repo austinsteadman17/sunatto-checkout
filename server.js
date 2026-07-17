@@ -1264,6 +1264,28 @@ async function findAndMarkLinkPaid(paymentIntent) {
 // ---------------------------------------------------------------------
 const STRIPE_ACCOUNT_ID = 'acct_1TtX1FAKmB8qDjmo';
 
+// Voiding an invoice is a permanent, one-way action in Stripe (unlike a
+// draft, which can just be deleted — see the DELETE endpoint below). The
+// invoice record itself sticks around in Stripe marked "void", which is
+// exactly why voided invoices get pulled into their own "Voided" tab in
+// the hub instead of just disappearing. Stripe's API has no concept of a
+// "reason" for voiding, so that's tracked entirely on our side — this
+// small Blobs store maps invoice id -> { reason, voidedByName, voidedAt },
+// looked up whenever the Voided tab is built (GET /api/invoices/voided).
+const VOID_META_STORE_NAME = 'sunatto-voided-invoice-meta';
+const VOID_META_BLOB_KEY = 'voided-meta.json';
+
+async function loadVoidMeta() {
+  const store = blobStore(VOID_META_STORE_NAME);
+  const data = await store.get(VOID_META_BLOB_KEY, { type: 'json' });
+  return (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+}
+
+async function saveVoidMeta(meta) {
+  const store = blobStore(VOID_META_STORE_NAME);
+  await store.setJSON(VOID_META_BLOB_KEY, meta);
+}
+
 function invoiceDashboardUrl(invoiceId) {
   return `https://dashboard.stripe.com/${STRIPE_ACCOUNT_ID}/invoices/${invoiceId}`;
 }
@@ -1418,6 +1440,46 @@ app.get('/api/invoices', async (req, res) => {
   }
 });
 
+// Powers the hub's "Voided" tab — every invoice that's been voided (via
+// the button below, OR directly in the Stripe dashboard), so staff have
+// somewhere to see what's been pulled out of the active list and why,
+// instead of it just disappearing. Same visibility rule as the main
+// invoices list above: admins see every voided invoice, everyone else
+// only ones for jobs they're attached to.
+app.get('/api/invoices/voided', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const [normalizedJobs, invoices, voidMeta] = await Promise.all([
+      buildNormalizedJobsForUser(user, admin),
+      listAllStripeInvoices(),
+      loadVoidMeta(),
+    ]);
+
+    const results = [];
+    for (const invoice of invoices) {
+      if (invoice.status !== 'void') continue;
+      if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs)) continue;
+      const matchedJob = findMatchedJob(invoice, normalizedJobs);
+      const meta = voidMeta[invoice.id] || null;
+      results.push({
+        ...publicInvoice(invoice, matchedJob),
+        voidReason: meta ? meta.reason : null,
+        voidedByName: meta ? meta.voidedByName : null,
+        voidedAt: meta ? meta.voidedAt : null,
+      });
+    }
+
+    results.sort((a, b) => new Date(b.voidedAt || b.created) - new Date(a.voidedAt || a.created));
+
+    res.json({ invoices: results, isAdmin: admin });
+  } catch (err) {
+    console.error('voided invoices list error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Finalizes (if still a draft) and sends an invoice directly — the same
 // end result as clicking "Finalize and send" in the Stripe dashboard,
 // just without leaving the hub. Re-checks visibility server-side so a
@@ -1493,6 +1555,59 @@ app.delete('/api/invoices/:id', async (req, res) => {
     res.json({ deleted: true });
   } catch (err) {
     console.error('invoice delete error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Voids a SENT (open, unpaid) invoice — e.g. the customer said they'd pay
+// the invoice, then decided to pay by credit card instead (invoices
+// themselves have no card option here), so the invoice needs to come off
+// the active list rather than sit open forever. Unlike the draft delete
+// above, this is permanent in Stripe too and the record is kept (marked
+// "void"), which is why it lands in the Voided tab (GET /api/invoices/voided)
+// instead of vanishing.
+//
+// Blocked while a payment is already processing (e.g. mid-flight ACH) —
+// voiding an invoice a customer already submitted payment against risks
+// that payment landing against a voided invoice, which is exactly the
+// confusion this whole feature exists to prevent. Same visibility check
+// as everywhere else: a non-admin can only void invoices for their jobs.
+app.post('/api/invoices/:id/void', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const invoice = await stripe.invoices.retrieve(req.params.id, { expand: ['payment_intent'] });
+
+    if (!admin) {
+      const normalizedJobs = await buildNormalizedJobsForUser(user, false);
+      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+        return res.status(404).json({ error: 'Invoice not found.' });
+      }
+    }
+
+    if (invoice.status !== 'open') {
+      return res.status(400).json({ error: `This invoice is "${invoice.status}" — only a sent, unpaid invoice can be voided here.` });
+    }
+    if (invoicePaymentIsProcessing(invoice)) {
+      return res.status(400).json({ error: 'A payment is already submitted and processing on this invoice — wait for it to clear (or fail) before voiding.' });
+    }
+
+    const reason = (req.body && req.body.reason) || '';
+
+    const voided = await stripe.invoices.voidInvoice(invoice.id);
+
+    const meta = await loadVoidMeta();
+    meta[invoice.id] = {
+      reason: reason.trim(),
+      voidedByName: fullNameOf(user),
+      voidedAt: new Date().toISOString(),
+    };
+    await saveVoidMeta(meta);
+
+    res.json({ invoice: publicInvoice(voided, null) });
+  } catch (err) {
+    console.error('invoice void error:', err);
     res.status(500).json({ error: err.message });
   }
 });
