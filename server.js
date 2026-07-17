@@ -1461,6 +1461,42 @@ app.post('/api/invoices/:id/send', async (req, res) => {
   }
 });
 
+// Permanently deletes a DRAFT invoice — both the hub's view of it AND the
+// underlying Stripe object (stripe.invoices.del only works on invoices
+// still in "draft"; Stripe itself refuses to delete anything that's ever
+// been finalized/sent, which is exactly the safety net we want here — an
+// invoice a customer may have already seen should be voided in Stripe, not
+// deleted). This is for cleaning up mistaken/duplicate drafts before
+// they're ever sent, e.g. a job entered twice or wrong amount typed in.
+// Same visibility check as /send: a non-admin can only delete drafts for
+// jobs they're attached to.
+app.delete('/api/invoices/:id', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const invoice = await stripe.invoices.retrieve(req.params.id);
+
+    if (!admin) {
+      const normalizedJobs = await buildNormalizedJobsForUser(user, false);
+      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+        return res.status(404).json({ error: 'Invoice not found.' });
+      }
+    }
+
+    if (invoice.status !== 'draft') {
+      return res.status(400).json({ error: `This invoice is "${invoice.status}", not a draft — it can only be voided in Stripe, not deleted.` });
+    }
+
+    await stripe.invoices.del(invoice.id);
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('invoice delete error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------------------------------------------------------------------
 // 7b. Hub admin panel — lets an admin (see isUserAdmin above) see every
 // hub account, create one on someone else's behalf, reset a forgotten PIN
