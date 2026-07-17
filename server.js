@@ -948,6 +948,7 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
             items {
               id
               name
+              group { title }
               column_values(ids: [${allColumnIds.map((id) => `"${id}"`).join(', ')}]) {
                 id
                 text
@@ -979,6 +980,10 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
           email: values[MONDAY_EMAIL_COLUMN_ID] || '',
           phone: values[MONDAY_PHONE_COLUMN_ID] || '',
           totalCostCents: Number.isFinite(totalCost) ? Math.round(totalCost * 100) : null,
+          // The Monday board group (e.g. "Installed - Review/Corrections")
+          // this item currently sits in — surfaced in the hub as "Monday
+          // Status" so staff can see pipeline stage without opening Monday.
+          groupTitle: (item.group && item.group.title) || null,
         });
       }
     }
@@ -988,17 +993,25 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
   return jobs;
 }
 
-// True if a payment-link record's customer name + address fuzzy-matches
-// any of this user's Monday jobs.
-function linkMatchesJobs(link, normalizedJobs) {
+// Returns the single Monday job (name/address fuzzy match) this payment
+// link record corresponds to, or null. Shared by linkMatchesJobs (below)
+// and by GET /api/links to surface that job's board group as "Monday
+// Status" without duplicating the matching logic in two places.
+function findMatchedJobForLink(link, normalizedJobs) {
   const linkName = normalizeForMatch(link.customerName);
   const linkAddress = normalizeAddressForMatch(link.jobAddress);
-  if (!linkName || !linkAddress) return false;
-  return normalizedJobs.some((j) =>
+  if (!linkName || !linkAddress) return null;
+  return normalizedJobs.find((j) =>
     j.name && j.address
     && (j.name.includes(linkName) || linkName.includes(j.name))
     && (j.address.includes(linkAddress) || linkAddress.includes(j.address))
-  );
+  ) || null;
+}
+
+// True if a payment-link record's customer name + address fuzzy-matches
+// any of this user's Monday jobs.
+function linkMatchesJobs(link, normalizedJobs) {
+  return !!findMatchedJobForLink(link, normalizedJobs);
 }
 
 // Called by intake.js right before Copy Link / Send Email / Continue to
@@ -1064,18 +1077,29 @@ app.get('/api/links', async (req, res) => {
     // anyone, admin included, same as how void invoices are hidden above.
     const activeLinks = links.filter((l) => !l.voided);
 
+    const normalizedJobs = jobs.map((j) => ({
+      name: normalizeForMatch(j.name),
+      address: normalizeAddressForMatch(j.address),
+      groupTitle: j.groupTitle || null,
+    }));
+    // Attaches "Monday Status" (the board group this job currently sits
+    // in, e.g. "Installed - Review/Corrections") to each link so staff
+    // can see pipeline stage without opening Monday. null if no job matched.
+    const withMondayStatus = (link) => ({
+      ...link,
+      mondayStatus: (findMatchedJobForLink(link, normalizedJobs) || {}).groupTitle || null,
+    });
+
     // Admins see every (non-voided) link, full stop — no fuzzy
     // job-matching filter, so nothing is ever hidden even if a job was
     // since renamed/removed from the Monday board.
     if (admin) {
-      return res.json({ links: activeLinks, jobCount: jobs.length, isAdmin: true });
+      return res.json({ links: activeLinks.map(withMondayStatus), jobCount: jobs.length, isAdmin: true });
     }
 
-    const normalizedJobs = jobs.map((j) => ({
-      name: normalizeForMatch(j.name),
-      address: normalizeAddressForMatch(j.address),
-    }));
-    const visibleLinks = activeLinks.filter((l) => linkMatchesJobs(l, normalizedJobs));
+    const visibleLinks = activeLinks
+      .filter((l) => linkMatchesJobs(l, normalizedJobs))
+      .map(withMondayStatus);
     res.json({ links: visibleLinks, jobCount: jobs.length, isAdmin: false });
   } catch (err) {
     console.error('list links error:', err);
@@ -1322,6 +1346,9 @@ function publicInvoice(invoice, matchedJob) {
     type: guessInvoiceType(invoice.total, matchedJob ? matchedJob.totalCostCents : null),
     jobName: matchedJob ? matchedJob.rawName : null,
     jobAddress: matchedJob ? matchedJob.rawAddress : null,
+    // The Monday board group (pipeline stage) this job currently sits in,
+    // e.g. "Installed - Review/Corrections" — null if no job matched.
+    mondayStatus: matchedJob ? matchedJob.groupTitle : null,
     // True when the customer already submitted payment and it's just
     // waiting to clear (e.g. ACH bank debit, ~4-5 business days).
     paymentProcessing,
@@ -1337,6 +1364,7 @@ async function buildNormalizedJobsForUser(user, admin) {
     totalCostCents: j.totalCostCents,
     rawName: j.name,
     rawAddress: j.address,
+    groupTitle: j.groupTitle || null,
   }));
 }
 
