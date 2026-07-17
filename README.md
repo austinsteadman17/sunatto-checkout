@@ -246,6 +246,44 @@ There's no email/password account system — just first/last name + a PIN:
    again next time you open the page — but again, not your name, since
    that part's remembered.
 
+### Changing your PIN
+
+Anyone can change their own PIN from inside the hub — click **"Change
+PIN"** next to your name (top right of Sent Links), enter your current
+PIN and a new 4-6 digit one, and save. This requires knowing your current
+PIN; if you've forgotten it, an admin needs to reset it for you (see
+"Admin access" below).
+
+### Admin access
+
+One person — **Austin Steadman** — is a permanent admin, hardcoded into
+`server.js` (`BOOTSTRAP_ADMIN_NAMES`) so there's always at least one admin
+account without needing a chicken-and-egg setup step. Admins get two
+things regular accounts don't:
+
+- **Full visibility.** An admin's Sent Links list and Generate Link job
+  picker show *every* job on the Sunatto Pipeline 2026 board, not just
+  ones where their name is in the Sales Rep/Office/Manager column.
+- **The Admin panel** (a new "Admin" button appears next to "+ Generate
+  Link" for admins only) where you can:
+  - See every hub account and whether they're an admin.
+  - Create a new account on someone's behalf (useful for onboarding
+    without handing them your device) — you set their starting PIN, and
+    they can change it themselves afterward.
+  - **Reset anyone's PIN** without knowing their old one — this is the
+    fix for "I forgot my PIN," replacing the old workaround of manually
+    editing the Netlify Blobs store.
+  - Promote another account to admin, or remove admin access from one
+    (you can't remove Austin's — the bootstrap name above is always
+    treated as admin regardless of what's stored).
+  - Delete an account entirely (they'd just create a new one under the
+    same name if they need access again).
+
+To make someone else a permanent admin the same way Austin is, add their
+name (normalized the same way as everywhere else in this file — lowercase,
+no punctuation) to `BOOTSTRAP_ADMIN_NAMES` in `server.js`. Otherwise, use
+the Admin panel's promote/demote toggle for everyone else.
+
 ### Getting set up
 
 Two things beyond what's already needed for the Monday.com sync above:
@@ -300,10 +338,11 @@ This has **not** been tested against the real Netlify Blobs or Monday APIs
   rate-limiting or lockout on `/api/hub/login`. This is fine for an
   internal tool among trusted staff, but don't treat it as a strong
   security boundary.
-- **No self-serve PIN reset.** If someone forgets their PIN, the only fix
-  right now is deleting their record directly from the
-  `sunatto-hub-users` Netlify Blobs store (Netlify dashboard → your site →
-  Blobs) so they can re-create an account under the same name.
+- **Forgotten PINs need an admin.** There's still no *self-serve* reset
+  (you must know your current PIN to change it yourself) — but an admin
+  can now reset anyone's PIN from the Admin panel (see "Admin access"
+  above), so this no longer requires editing the Netlify Blobs store by
+  hand.
 - **Name matching is fuzzy, not exact.** "Chris Beggs" logging in won't
   match a Monday job assigned to "Christopher Beggs" unless one name is a
   substring of the other after normalizing. Encourage people to log in

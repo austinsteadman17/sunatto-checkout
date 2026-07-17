@@ -711,6 +711,20 @@ function hashPin(pin, salt) {
   return crypto.pbkdf2Sync(String(pin), salt, 100000, 32, 'sha256').toString('hex');
 }
 
+// Names that are always treated as admin, regardless of what's stored in
+// Blobs — this is what makes Austin an admin on his very first login even
+// though there's no admin UI yet to grant that to anyone (a real admin can
+// promote/demote anyone else later via the admin panel below; this list is
+// purely the bootstrap seed so the whole system isn't a chicken-and-egg
+// problem). Matched the same fuzzy way as everything else in this file.
+const BOOTSTRAP_ADMIN_NAMES = ['austin steadman'].map((n) => normalizeForMatch(n));
+
+function isUserAdmin(user) {
+  if (!user) return false;
+  if (user.isAdmin) return true;
+  return BOOTSTRAP_ADMIN_NAMES.includes(normalizeForMatch(fullNameOf(user)));
+}
+
 // Looks up the logged-in user from the X-Hub-Session header. Sends 401
 // and returns null if there's no valid session — callers should
 // `if (!user) return;` right after calling this.
@@ -724,6 +738,21 @@ async function requireHubUser(req, res) {
   const user = users.find((u) => u.sessionToken === token);
   if (!user) {
     res.status(401).json({ error: 'Session expired — please log in again.' });
+    return null;
+  }
+  return user;
+}
+
+// Same as requireHubUser, but also requires the isUserAdmin check — for
+// the admin-only endpoints below (user list/create/reset-pin/etc). Sends
+// 403 (not 401) if the session is valid but the person just isn't an admin,
+// so the frontend can tell the difference between "log in again" and "you
+// don't have access."
+async function requireAdmin(req, res) {
+  const user = await requireHubUser(req, res);
+  if (!user) return null;
+  if (!isUserAdmin(user)) {
+    res.status(403).json({ error: 'Admin access required.' });
     return null;
   }
   return user;
@@ -776,12 +805,19 @@ app.post('/api/hub/create-user', async (req, res) => {
       pinSalt: salt,
       pinHash: hashPin(pin, salt),
       sessionToken,
+      isAdmin: false,
       createdAt: new Date().toISOString(),
     };
     users.push(newUser);
     await saveUsers(users);
 
-    res.json({ sessionToken, userId: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName });
+    res.json({
+      sessionToken,
+      userId: newUser.id,
+      firstName: newUser.firstName,
+      lastName: newUser.lastName,
+      isAdmin: isUserAdmin(newUser),
+    });
   } catch (err) {
     console.error('hub/create-user error:', err);
     res.status(500).json({ error: err.message });
@@ -816,9 +852,61 @@ app.post('/api/hub/login', async (req, res) => {
     user.sessionToken = crypto.randomUUID(); // rotate on every login
     await saveUsers(users);
 
-    res.json({ sessionToken: user.sessionToken, userId: user.id, firstName: user.firstName, lastName: user.lastName });
+    res.json({
+      sessionToken: user.sessionToken,
+      userId: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      isAdmin: isUserAdmin(user),
+    });
   } catch (err) {
     console.error('hub/login error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Tells hub.js whether the currently logged-in person is an admin, so it
+// knows whether to show the Admin button — checked fresh on every page
+// load rather than trusting a cached value, since admin status can change
+// (someone can be promoted/demoted after they've already logged in).
+app.get('/api/hub/me', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  res.json({
+    userId: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    isAdmin: isUserAdmin(user),
+  });
+});
+
+// Lets a logged-in person change their own PIN (they must know their
+// current one — this is not the same as an admin's forced reset below).
+// Returns a new sessionToken since the PIN hash changed; the frontend
+// swaps it into sessionStorage so this same tab stays logged in.
+app.post('/api/hub/change-pin', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const { currentPin, newPin } = req.body;
+    if (!currentPin || hashPin(currentPin, user.pinSalt) !== user.pinHash) {
+      return res.status(401).json({ error: 'Current PIN is incorrect.' });
+    }
+    if (!/^\d{4,6}$/.test(newPin || '')) {
+      return res.status(400).json({ error: 'New PIN must be 4-6 digits.' });
+    }
+
+    const users = await loadUsers();
+    const target = users.find((u) => u.id === user.id);
+    const salt = crypto.randomBytes(16).toString('hex');
+    target.pinSalt = salt;
+    target.pinHash = hashPin(newPin, salt);
+    target.sessionToken = crypto.randomUUID(); // rotate — signs out other devices
+    await saveUsers(users);
+
+    res.json({ sessionToken: target.sessionToken });
+  } catch (err) {
+    console.error('hub/change-pin error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -837,9 +925,13 @@ const MONDAY_TOTAL_COST_COLUMN_ID = 'numeric_mkrw6pqv';
 // fullName shows up in the Sales Rep, Office, or Manager column. Each of
 // those columns' text value is a comma-separated list of Monday people's
 // display names.
-async function getUserAttachedJobs(fullName) {
+//
+// Pass { isAdmin: true } to skip the attached-person check entirely and
+// return every job on the board — this is what gives admins (see
+// isUserAdmin above) full visibility regardless of who's assigned to what.
+async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
   const targetName = normalizeForMatch(fullName);
-  if (!targetName) return [];
+  if (!isAdmin && !targetName) return [];
 
   const peopleColumnIds = [MONDAY_SALES_REP_COLUMN_ID, MONDAY_OFFICE_COLUMN_ID, MONDAY_MANAGER_COLUMN_ID];
   const contactColumnIds = [MONDAY_ADDRESS_COLUMN_ID, MONDAY_EMAIL_COLUMN_ID, MONDAY_PHONE_COLUMN_ID, MONDAY_TOTAL_COST_COLUMN_ID];
@@ -873,7 +965,7 @@ async function getUserAttachedJobs(fullName) {
       for (const cv of item.column_values) values[cv.id] = cv.text;
 
       const peopleText = peopleColumnIds.map((id) => values[id]).filter(Boolean).join(', ');
-      const attached = peopleText
+      const attached = isAdmin || peopleText
         .split(',')
         .map((n) => normalizeForMatch(n))
         .some((n) => n && (n.includes(targetName) || targetName.includes(n)));
@@ -959,13 +1051,25 @@ app.get('/api/links', async (req, res) => {
   const user = await requireHubUser(req, res);
   if (!user) return;
   try {
-    const [links, jobs] = await Promise.all([loadLinks(), getUserAttachedJobs(fullNameOf(user))]);
+    const admin = isUserAdmin(user);
+    const [links, jobs] = await Promise.all([
+      loadLinks(),
+      getUserAttachedJobs(fullNameOf(user), { isAdmin: admin }),
+    ]);
+
+    // Admins see every link, full stop — no fuzzy job-matching filter, so
+    // nothing is ever hidden even if a job was since renamed/removed from
+    // the Monday board.
+    if (admin) {
+      return res.json({ links, jobCount: jobs.length, isAdmin: true });
+    }
+
     const normalizedJobs = jobs.map((j) => ({
       name: normalizeForMatch(j.name),
       address: normalizeAddressForMatch(j.address),
     }));
     const visibleLinks = links.filter((l) => linkMatchesJobs(l, normalizedJobs));
-    res.json({ links: visibleLinks, jobCount: jobs.length });
+    res.json({ links: visibleLinks, jobCount: jobs.length, isAdmin: false });
   } catch (err) {
     console.error('list links error:', err);
     res.status(500).json({ error: err.message });
@@ -981,7 +1085,7 @@ app.get('/api/hub/my-jobs', async (req, res) => {
   const user = await requireHubUser(req, res);
   if (!user) return;
   try {
-    const jobs = await getUserAttachedJobs(fullNameOf(user));
+    const jobs = await getUserAttachedJobs(fullNameOf(user), { isAdmin: isUserAdmin(user) });
     res.json({ jobs });
   } catch (err) {
     console.error('hub/my-jobs error:', err);
@@ -996,14 +1100,18 @@ app.post('/api/links/:id/resend', async (req, res) => {
   const user = await requireHubUser(req, res);
   if (!user) return;
   try {
-    const [links, jobs] = await Promise.all([loadLinks(), getUserAttachedJobs(fullNameOf(user))]);
+    const admin = isUserAdmin(user);
+    const [links, jobs] = await Promise.all([
+      loadLinks(),
+      getUserAttachedJobs(fullNameOf(user), { isAdmin: admin }),
+    ]);
     const normalizedJobs = jobs.map((j) => ({
       name: normalizeForMatch(j.name),
       address: normalizeAddressForMatch(j.address),
     }));
 
     const record = links.find((l) => l.id === req.params.id);
-    if (!record || !linkMatchesJobs(record, normalizedJobs)) {
+    if (!record || (!admin && !linkMatchesJobs(record, normalizedJobs))) {
       return res.status(404).json({ error: 'Link not found.' });
     }
     if (!record.customerEmail) {
@@ -1077,6 +1185,165 @@ async function findAndMarkLinkPaid(paymentIntent) {
   await saveLinks(links);
   console.log(`Payment-links hub: marked link ${candidates[0].id} paid for PaymentIntent ${paymentIntent.id}.`);
 }
+
+// ---------------------------------------------------------------------
+// 7b. Hub admin panel — lets an admin (see isUserAdmin above) see every
+// hub account, create one on someone else's behalf, reset a forgotten PIN
+// without needing the old one, promote/demote admins, and remove an
+// account. This replaces the old "no self-serve PIN reset" limitation
+// (previously the only fix was editing the Blobs store by hand).
+// ---------------------------------------------------------------------
+
+// Never send pinHash/pinSalt/sessionToken to the client — this is the
+// only shape of a user record that should ever leave the server.
+function publicUser(u) {
+  return {
+    id: u.id,
+    firstName: u.firstName,
+    lastName: u.lastName,
+    isAdmin: isUserAdmin(u),
+    createdAt: u.createdAt,
+  };
+}
+
+app.get('/api/admin/users', async (req, res) => {
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+  try {
+    const users = await loadUsers();
+    res.json({ users: users.map(publicUser) });
+  } catch (err) {
+    console.error('admin/users list error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin creates an account on someone else's behalf (e.g. onboarding a new
+// rep who isn't in front of the hub themselves) — same validation as the
+// self-serve create-user above, plus an optional isAdmin flag.
+app.post('/api/admin/users', async (req, res) => {
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+  try {
+    const { firstName, lastName, pin, isAdmin } = req.body;
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: 'firstName and lastName are required.' });
+    }
+    if (!/^\d{4,6}$/.test(pin || '')) {
+      return res.status(400).json({ error: 'PIN must be 4-6 digits.' });
+    }
+
+    const users = await loadUsers();
+    const target = normalizeForMatch(`${firstName} ${lastName}`);
+    if (users.some((u) => normalizeForMatch(fullNameOf(u)) === target)) {
+      return res.status(409).json({ error: 'An account already exists for that name.' });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const newUser = {
+      id: crypto.randomUUID(),
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      pinSalt: salt,
+      pinHash: hashPin(pin, salt),
+      sessionToken: crypto.randomUUID(),
+      isAdmin: !!isAdmin,
+      createdAt: new Date().toISOString(),
+    };
+    users.push(newUser);
+    await saveUsers(users);
+
+    res.json({ user: publicUser(newUser) });
+  } catch (err) {
+    console.error('admin/users create error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin sets a brand new PIN for someone else, no need to know their old
+// one — this is the actual fix for "I forgot my PIN." Rotates their
+// session too, so they (or anyone else who had that session) get signed
+// out and have to log back in with the new PIN.
+app.post('/api/admin/users/:id/reset-pin', async (req, res) => {
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+  try {
+    const { newPin } = req.body;
+    if (!/^\d{4,6}$/.test(newPin || '')) {
+      return res.status(400).json({ error: 'New PIN must be 4-6 digits.' });
+    }
+
+    const users = await loadUsers();
+    const target = users.find((u) => u.id === req.params.id);
+    if (!target) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    target.pinSalt = salt;
+    target.pinHash = hashPin(newPin, salt);
+    target.sessionToken = crypto.randomUUID();
+    await saveUsers(users);
+
+    res.json({ user: publicUser(target) });
+  } catch (err) {
+    console.error('admin/users reset-pin error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Promote/demote another account's admin flag. Bootstrap admins (see
+// BOOTSTRAP_ADMIN_NAMES above) can't be demoted through this endpoint —
+// they'd just be treated as admin again on their next request anyway, so
+// this just avoids a confusing "it didn't work" toggle in the UI.
+app.post('/api/admin/users/:id/toggle-admin', async (req, res) => {
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+  try {
+    const { isAdmin } = req.body;
+    const users = await loadUsers();
+    const target = users.find((u) => u.id === req.params.id);
+    if (!target) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    if (!isAdmin && BOOTSTRAP_ADMIN_NAMES.includes(normalizeForMatch(fullNameOf(target)))) {
+      return res.status(400).json({ error: 'This person is a permanent admin and can\'t be demoted.' });
+    }
+
+    target.isAdmin = !!isAdmin;
+    await saveUsers(users);
+
+    res.json({ user: publicUser(target) });
+  } catch (err) {
+    console.error('admin/users toggle-admin error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Removes an account entirely (e.g. a typo'd duplicate, or someone who's
+// left) so the name is free to re-create if they still need access.
+app.delete('/api/admin/users/:id', async (req, res) => {
+  const admin = await requireAdmin(req, res);
+  if (!admin) return;
+  try {
+    const users = await loadUsers();
+    const target = users.find((u) => u.id === req.params.id);
+    if (!target) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    if (BOOTSTRAP_ADMIN_NAMES.includes(normalizeForMatch(fullNameOf(target)))) {
+      return res.status(400).json({ error: 'This person is a permanent admin and can\'t be deleted.' });
+    }
+
+    const remaining = users.filter((u) => u.id !== req.params.id);
+    await saveUsers(remaining);
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('admin/users delete error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Publishable key + Stripe account-level config the frontend needs.
 // mapboxAccessToken (optional) enables address autocomplete on
