@@ -77,6 +77,36 @@ const genLinkBlock = document.getElementById('gen-link-block');
 const genGeneratedLinkField = document.getElementById('gen-generated-link');
 const genCopyLinkButton = document.getElementById('gen-copy-link-button');
 
+const changePinToggleButton = document.getElementById('change-pin-toggle-button');
+const changePinPanel = document.getElementById('change-pin-panel');
+const currentPinField = document.getElementById('current-pin-field');
+const newPinField = document.getElementById('new-pin-field');
+const confirmNewPinField = document.getElementById('confirm-new-pin-field');
+const changePinError = document.getElementById('change-pin-error');
+const changePinSuccess = document.getElementById('change-pin-success');
+const savePinButton = document.getElementById('save-pin-button');
+const cancelChangePinButton = document.getElementById('cancel-change-pin-button');
+
+const adminButton = document.getElementById('admin-button');
+const adminView = document.getElementById('admin-view');
+const backToHubFromAdminButton = document.getElementById('back-to-hub-from-admin-button');
+const newUserFirstNameField = document.getElementById('new-user-first-name');
+const newUserLastNameField = document.getElementById('new-user-last-name');
+const newUserPinField = document.getElementById('new-user-pin');
+const newUserIsAdminCheckbox = document.getElementById('new-user-is-admin');
+const createUserError = document.getElementById('create-user-error');
+const createUserSuccess = document.getElementById('create-user-success');
+const createUserButton = document.getElementById('create-user-button');
+const resetPinPanel = document.getElementById('reset-pin-panel');
+const resetPinTargetName = document.getElementById('reset-pin-target-name');
+const resetPinField = document.getElementById('reset-pin-field');
+const resetPinError = document.getElementById('reset-pin-error');
+const resetPinSuccess = document.getElementById('reset-pin-success');
+const confirmResetPinButton = document.getElementById('confirm-reset-pin-button');
+const cancelResetPinButton = document.getElementById('cancel-reset-pin-button');
+const adminUsersError = document.getElementById('admin-users-error');
+const adminUsersTableWrap = document.getElementById('admin-users-table-wrap');
+
 let allLinks = [];
 let pendingName = { firstName: '', lastName: '' }; // held between the name step and the pin steps
 
@@ -85,6 +115,10 @@ let myJobsLoaded = false;
 let selectedJob = null;       // the job currently being turned into a link
 let genType = 'deposit';
 let genLastRecordedFingerprint = null;
+
+let currentIsAdmin = false;
+let adminUsers = [];
+let resetPinTargetUserId = null;
 
 // --- storage helpers ---
 
@@ -131,19 +165,29 @@ function escapeHtml(str) {
 function showLogin() {
   hubView.style.display = 'none';
   generateView.style.display = 'none';
+  adminView.style.display = 'none';
   loginView.style.display = 'block';
 }
 
 function showHub() {
   loginView.style.display = 'none';
   generateView.style.display = 'none';
+  adminView.style.display = 'none';
   hubView.style.display = 'block';
 }
 
 function showGenerate() {
   loginView.style.display = 'none';
   hubView.style.display = 'none';
+  adminView.style.display = 'none';
   generateView.style.display = 'block';
+}
+
+function showAdmin() {
+  loginView.style.display = 'none';
+  hubView.style.display = 'none';
+  generateView.style.display = 'none';
+  adminView.style.display = 'block';
 }
 
 function showStep(step) {
@@ -296,6 +340,9 @@ createPinButton.addEventListener('click', async () => {
 
 logoutButton.addEventListener('click', () => {
   clearSessionToken();
+  currentIsAdmin = false;
+  adminButton.style.display = 'none';
+  changePinPanel.style.display = 'none';
   initLogin();
 });
 
@@ -322,6 +369,21 @@ async function fetchLinks() {
   return res.json();
 }
 
+// Refreshes the Admin button's visibility from the server (never trusted
+// from cached/local state) — admin status can change after someone's
+// already logged in, e.g. promoted or demoted by another admin.
+async function refreshAdminButton() {
+  try {
+    const res = await fetch('/api/hub/me', { headers: { 'X-Hub-Session': getSessionToken() } });
+    if (!res.ok) throw new Error('not ok');
+    const data = await res.json();
+    currentIsAdmin = !!data.isAdmin;
+  } catch (err) {
+    currentIsAdmin = false;
+  }
+  adminButton.style.display = currentIsAdmin ? 'inline-block' : 'none';
+}
+
 async function loadAndRender() {
   try {
     const data = await fetchLinks();
@@ -329,11 +391,14 @@ async function loadAndRender() {
 
     const remembered = getRememberedUser();
     currentUserName.textContent = remembered ? `${remembered.firstName} ${remembered.lastName}` : '';
-    jobCountNote.textContent = data.jobCount
-      ? `Showing links for the ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} you're attached to on the Monday board.`
-      : 'No jobs on the Monday board are attached to your name yet — once you’re added as Sales Rep, Office, or Manager on a job, its links will show up here.';
+    jobCountNote.textContent = data.isAdmin
+      ? `Showing all ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} on the Monday board (admin access).`
+      : data.jobCount
+        ? `Showing links for the ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} you're attached to on the Monday board.`
+        : 'No jobs on the Monday board are attached to your name yet — once you’re added as Sales Rep, Office, or Manager on a job, its links will show up here.';
 
     hubError.textContent = '';
+    await refreshAdminButton();
     showHub();
     renderTable();
   } catch (err) {
@@ -738,6 +803,270 @@ backToListButton.addEventListener('click', () => {
 });
 backToHubButton.addEventListener('click', () => {
   showHub();
+});
+
+// --- Change PIN (self-service, anyone) ---
+
+changePinToggleButton.addEventListener('click', () => {
+  const showing = changePinPanel.style.display === 'block';
+  changePinPanel.style.display = showing ? 'none' : 'block';
+  changePinError.textContent = '';
+  changePinSuccess.textContent = '';
+  currentPinField.value = '';
+  newPinField.value = '';
+  confirmNewPinField.value = '';
+  if (!showing) currentPinField.focus();
+});
+
+cancelChangePinButton.addEventListener('click', () => {
+  changePinPanel.style.display = 'none';
+});
+
+savePinButton.addEventListener('click', async () => {
+  changePinError.textContent = '';
+  changePinSuccess.textContent = '';
+
+  const currentPin = currentPinField.value.trim();
+  const newPin = newPinField.value.trim();
+  const confirmPin = confirmNewPinField.value.trim();
+
+  if (!currentPin) {
+    changePinError.textContent = 'Enter your current PIN.';
+    return;
+  }
+  if (!/^\d{4,6}$/.test(newPin)) {
+    changePinError.textContent = 'New PIN must be 4-6 digits.';
+    return;
+  }
+  if (newPin !== confirmPin) {
+    changePinError.textContent = 'New PINs don’t match.';
+    return;
+  }
+
+  savePinButton.disabled = true;
+  savePinButton.textContent = 'Saving…';
+
+  try {
+    const res = await fetch('/api/hub/change-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ currentPin, newPin }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not change PIN.');
+
+    setSessionToken(data.sessionToken); // rotated server-side; keep this tab logged in
+    changePinSuccess.textContent = 'PIN updated.';
+    currentPinField.value = '';
+    newPinField.value = '';
+    confirmNewPinField.value = '';
+  } catch (err) {
+    changePinError.textContent = err.message;
+  } finally {
+    savePinButton.disabled = false;
+    savePinButton.textContent = 'Save New PIN';
+  }
+});
+
+// --- Admin panel ---
+
+adminButton.addEventListener('click', () => {
+  showAdmin();
+  fetchAdminUsers();
+});
+
+backToHubFromAdminButton.addEventListener('click', () => {
+  showHub();
+});
+
+async function fetchAdminUsers() {
+  adminUsersError.textContent = '';
+  adminUsersTableWrap.innerHTML = '<div class="empty-state">Loading…</div>';
+  try {
+    const res = await fetch('/api/admin/users', { headers: { 'X-Hub-Session': getSessionToken() } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load users.');
+    adminUsers = data.users || [];
+    renderAdminUsers();
+  } catch (err) {
+    adminUsersTableWrap.innerHTML = '';
+    adminUsersError.textContent = err.message;
+  }
+}
+
+function renderAdminUsers() {
+  if (adminUsers.length === 0) {
+    adminUsersTableWrap.innerHTML = '<div class="empty-state">No hub accounts yet.</div>';
+    return;
+  }
+
+  const rows = adminUsers.map((u) => {
+    const name = `${u.firstName} ${u.lastName}`;
+    return `
+      <tr data-id="${u.id}">
+        <td><div class="cust-name">${escapeHtml(name)}</div></td>
+        <td>${u.isAdmin ? '<span class="badge admin">Admin</span>' : '<span class="badge staff">Staff</span>'}</td>
+        <td>${fmtDate(u.createdAt)}</td>
+        <td>
+          <div class="row-actions">
+            <button type="button" class="secondary reset-pin-btn" data-id="${u.id}" data-name="${escapeHtml(name)}">Reset PIN</button>
+            <button type="button" class="secondary toggle-admin-btn" data-id="${u.id}" data-admin="${u.isAdmin ? '1' : '0'}">${u.isAdmin ? 'Remove Admin' : 'Make Admin'}</button>
+            <button type="button" class="secondary delete-user-btn" data-id="${u.id}" data-name="${escapeHtml(name)}">Delete</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  adminUsersTableWrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Role</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  adminUsersTableWrap.querySelectorAll('.reset-pin-btn').forEach((btn) => {
+    btn.addEventListener('click', () => openResetPinPanel(btn.getAttribute('data-id'), btn.getAttribute('data-name')));
+  });
+  adminUsersTableWrap.querySelectorAll('.toggle-admin-btn').forEach((btn) => {
+    btn.addEventListener('click', () => toggleAdmin(btn));
+  });
+  adminUsersTableWrap.querySelectorAll('.delete-user-btn').forEach((btn) => {
+    btn.addEventListener('click', () => deleteUser(btn.getAttribute('data-id'), btn.getAttribute('data-name')));
+  });
+}
+
+function openResetPinPanel(userId, name) {
+  resetPinTargetUserId = userId;
+  resetPinTargetName.textContent = name;
+  resetPinField.value = '';
+  resetPinError.textContent = '';
+  resetPinSuccess.textContent = '';
+  resetPinPanel.style.display = 'block';
+  resetPinPanel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+cancelResetPinButton.addEventListener('click', () => {
+  resetPinPanel.style.display = 'none';
+  resetPinTargetUserId = null;
+});
+
+confirmResetPinButton.addEventListener('click', async () => {
+  const newPin = resetPinField.value.trim();
+  if (!/^\d{4,6}$/.test(newPin)) {
+    resetPinError.textContent = 'New PIN must be 4-6 digits.';
+    return;
+  }
+
+  confirmResetPinButton.disabled = true;
+  confirmResetPinButton.textContent = 'Resetting…';
+  resetPinError.textContent = '';
+
+  try {
+    const res = await fetch(`/api/admin/users/${resetPinTargetUserId}/reset-pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ newPin }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not reset PIN.');
+    resetPinSuccess.textContent = 'PIN reset — they can log in with the new PIN now.';
+    resetPinField.value = '';
+  } catch (err) {
+    resetPinError.textContent = err.message;
+  } finally {
+    confirmResetPinButton.disabled = false;
+    confirmResetPinButton.textContent = 'Reset PIN';
+  }
+});
+
+async function toggleAdmin(btn) {
+  const userId = btn.getAttribute('data-id');
+  const currentlyAdmin = btn.getAttribute('data-admin') === '1';
+  adminUsersError.textContent = '';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/admin/users/${userId}/toggle-admin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ isAdmin: !currentlyAdmin }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not update admin access.');
+    await fetchAdminUsers();
+  } catch (err) {
+    adminUsersError.textContent = err.message;
+    btn.disabled = false;
+  }
+}
+
+async function deleteUser(userId, name) {
+  if (!window.confirm(`Delete the hub account for ${name}? They'll need to create a new account (with a new PIN) if they need access again.`)) {
+    return;
+  }
+  adminUsersError.textContent = '';
+  try {
+    const res = await fetch(`/api/admin/users/${userId}`, {
+      method: 'DELETE',
+      headers: { 'X-Hub-Session': getSessionToken() },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not delete user.');
+    await fetchAdminUsers();
+  } catch (err) {
+    adminUsersError.textContent = err.message;
+  }
+}
+
+createUserButton.addEventListener('click', async () => {
+  createUserError.textContent = '';
+  createUserSuccess.textContent = '';
+
+  const firstName = newUserFirstNameField.value.trim();
+  const lastName = newUserLastNameField.value.trim();
+  const pin = newUserPinField.value.trim();
+  const wantsAdmin = newUserIsAdminCheckbox.checked;
+
+  if (!firstName || !lastName) {
+    createUserError.textContent = 'Enter a first and last name.';
+    return;
+  }
+  if (!/^\d{4,6}$/.test(pin)) {
+    createUserError.textContent = 'PIN must be 4-6 digits.';
+    return;
+  }
+
+  createUserButton.disabled = true;
+  createUserButton.textContent = 'Creating…';
+
+  try {
+    const res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ firstName, lastName, pin, isAdmin: wantsAdmin }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not create user.');
+
+    createUserSuccess.textContent = `Created ${firstName} ${lastName}. Give them their starting PIN — they can change it themselves any time from the hub.`;
+    newUserFirstNameField.value = '';
+    newUserLastNameField.value = '';
+    newUserPinField.value = '';
+    newUserIsAdminCheckbox.checked = false;
+    await fetchAdminUsers();
+  } catch (err) {
+    createUserError.textContent = err.message;
+  } finally {
+    createUserButton.disabled = false;
+    createUserButton.textContent = 'Create User';
+  }
 });
 
 // --- boot ---

@@ -245,7 +245,40 @@
     padding: 0 var(--sp-2);
   }
 
-  #hub-view, #generate-view { display: none; }
+  #hub-view, #generate-view, #admin-view { display: none; }
+
+  /* --- Change PIN panel --- */
+  .change-pin-panel {
+    display: none;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-4);
+    margin-bottom: var(--sp-4);
+  }
+  .change-pin-panel .field-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+  .change-pin-panel .field-row > div { flex: 1; min-width: 140px; }
+  .panel-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); align-items: center; }
+  .panel-actions button.primary { margin-top: 0; width: auto; padding: 10px 18px; }
+  .panel-actions button.secondary { padding: 0 16px; height: 40px; }
+
+  /* --- Admin view --- */
+  .admin-header { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+  .admin-header h1 { margin: 0; }
+  .create-user-card, .reset-pin-panel {
+    background: var(--gray-50);
+    border: 1px solid var(--gray-150);
+    border-radius: var(--radius-sm);
+    padding: var(--sp-4);
+    margin-bottom: var(--sp-5);
+  }
+  .reset-pin-panel { display: none; margin-bottom: var(--sp-4); }
+  .create-user-card .field-row { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+  .create-user-card .field-row > div { flex: 1; min-width: 120px; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: var(--sp-2) 0; }
+  .checkbox-row input { width: auto; }
+  .badge.admin { background: var(--gold-light); color: var(--gold-dark); }
+  .badge.staff { background: var(--gray-100); color: var(--gray-600); }
 
   /* --- Generate Payment Link view --- */
   .job-picker-list {
@@ -418,10 +451,35 @@
         </div>
         <div style="display:flex; align-items:center; gap: 12px;">
           <div class="user-info">
-            Logged in as <strong id="current-user-name"></strong> · <button type="button" class="link-button" id="logout-button">Log out</button>
+            Logged in as <strong id="current-user-name"></strong> · <button type="button" class="link-button" id="change-pin-toggle-button" style="display:inline;width:auto;margin:0;">Change PIN</button> · <button type="button" class="link-button" id="logout-button">Log out</button>
           </div>
+          <button type="button" class="secondary" id="admin-button" style="display:none;">Admin</button>
           <button type="button" class="secondary" id="generate-link-button">+ Generate Link</button>
           <button type="button" class="secondary" id="refresh-button">Refresh</button>
+        </div>
+      </div>
+
+      <div class="change-pin-panel" id="change-pin-panel">
+        <div class="eyebrow" style="margin-bottom: var(--sp-2);">Change Your PIN</div>
+        <div class="field-row">
+          <div>
+            <label class="field-label" for="current-pin-field">Current PIN</label>
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="current-pin-field" class="field-input" placeholder="••••" maxlength="6" />
+          </div>
+          <div>
+            <label class="field-label" for="new-pin-field">New PIN</label>
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="new-pin-field" class="field-input" placeholder="••••" maxlength="6" />
+          </div>
+          <div>
+            <label class="field-label" for="confirm-new-pin-field">Confirm New PIN</label>
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="confirm-new-pin-field" class="field-input" placeholder="••••" maxlength="6" />
+          </div>
+        </div>
+        <div class="error-message" id="change-pin-error"></div>
+        <div class="success-message" id="change-pin-success"></div>
+        <div class="panel-actions">
+          <button type="button" class="primary" id="save-pin-button">Save New PIN</button>
+          <button type="button" class="secondary" id="cancel-change-pin-button">Cancel</button>
         </div>
       </div>
 
@@ -511,6 +569,65 @@
       </div>
 
       <button type="button" class="link-button" id="back-to-hub-button">← Back to Sent Links</button>
+    </div>
+  </div>
+
+  <div class="wrap" id="admin-view">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+
+    <div class="card">
+      <div class="admin-header">
+        <div>
+          <div class="eyebrow">Payment Links Hub</div>
+          <h1>Admin</h1>
+        </div>
+        <button type="button" class="link-button" id="back-to-hub-from-admin-button" style="width:auto; margin:0;">← Back to Sent Links</button>
+      </div>
+
+      <div class="subtitle">Create hub accounts, reset PINs, and manage admin access.</div>
+
+      <div class="create-user-card">
+        <div class="eyebrow" style="margin-bottom: var(--sp-2);">Create a New User</div>
+        <div class="field-row">
+          <div>
+            <label class="field-label" for="new-user-first-name">First name</label>
+            <input type="text" id="new-user-first-name" class="field-input" placeholder="Jane" />
+          </div>
+          <div>
+            <label class="field-label" for="new-user-last-name">Last name</label>
+            <input type="text" id="new-user-last-name" class="field-input" placeholder="Doe" />
+          </div>
+          <div>
+            <label class="field-label" for="new-user-pin">Starting PIN</label>
+            <input type="password" inputmode="numeric" pattern="[0-9]*" id="new-user-pin" class="field-input" placeholder="••••" maxlength="6" />
+          </div>
+        </div>
+        <div class="checkbox-row">
+          <input type="checkbox" id="new-user-is-admin" />
+          <label for="new-user-is-admin">Give this person admin access</label>
+        </div>
+        <div class="error-message" id="create-user-error"></div>
+        <div class="success-message" id="create-user-success"></div>
+        <button type="button" class="primary" id="create-user-button" style="width:auto; padding:10px 18px;">Create User</button>
+      </div>
+
+      <div class="reset-pin-panel" id="reset-pin-panel">
+        <div class="eyebrow" style="margin-bottom: var(--sp-2);">Reset PIN for <span id="reset-pin-target-name"></span></div>
+        <label class="field-label" for="reset-pin-field">New PIN</label>
+        <input type="password" inputmode="numeric" pattern="[0-9]*" id="reset-pin-field" class="field-input" placeholder="••••" maxlength="6" style="max-width:200px;" />
+        <div class="error-message" id="reset-pin-error"></div>
+        <div class="success-message" id="reset-pin-success"></div>
+        <div class="panel-actions">
+          <button type="button" class="primary" id="confirm-reset-pin-button">Reset PIN</button>
+          <button type="button" class="secondary" id="cancel-reset-pin-button">Cancel</button>
+        </div>
+      </div>
+
+      <div class="error-message" id="admin-users-error"></div>
+      <div id="admin-users-table-wrap"></div>
     </div>
   </div>
 
