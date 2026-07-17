@@ -389,6 +389,9 @@
   .badge.unpaid { background: var(--gray-100); color: var(--gray-600); }
   .badge.deposit { background: var(--gold-light); color: var(--gold-dark); }
   .badge.balance { background: var(--gray-100); color: var(--gray-700); }
+  .badge.draft { background: var(--gray-100); color: var(--gray-600); }
+  .badge.open { background: var(--gold-light); color: var(--gold-dark); }
+  .badge.void, .badge.uncollectible { background: var(--red-light); color: var(--red); }
 
   .row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .row-actions button {
@@ -412,7 +415,7 @@
     padding: 0 var(--sp-2);
   }
 
-  #hub-view, #generate-view, #admin-view { display: none; }
+  #hub-view, #generate-view, #admin-view, #invoices-view { display: none; }
 
   /* --- Change PIN panel --- */
   .change-pin-panel {
@@ -668,6 +671,10 @@
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"></path></svg>
               Admin
             </button>
+            <button type="button" class="icon-btn" id="invoices-nav-button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2h9l3 3v17H6z"></path><path d="M9 8h6M9 12h6M9 16h4"></path></svg>
+              Invoices
+            </button>
             <button type="button" class="icon-btn primary-action" id="generate-link-button">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
               Generate Link
@@ -854,6 +861,37 @@
       <div class="error-message" id="admin-users-error"></div>
       <div id="admin-users-table-wrap"></div>
     </div>
+  </div>
+
+  <div class="wrap" id="invoices-view">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+
+    <div class="card">
+      <div class="hub-header">
+        <div>
+          <div class="eyebrow">Payment Links Hub</div>
+          <h1>Invoices</h1>
+        </div>
+        <button type="button" class="link-button" id="back-to-hub-from-invoices-button" style="width:auto; margin:0;">← Back to Sent Links</button>
+      </div>
+
+      <div class="subtitle" id="invoices-count-note"></div>
+
+      <div class="summary-strip" id="invoices-summary-strip"></div>
+
+      <div class="toolbar">
+        <input type="text" id="invoices-search-input" class="field-input" placeholder="Search by customer name or address…" />
+      </div>
+
+      <div class="error-message" id="invoices-error"></div>
+
+      <div id="invoices-table-wrap"></div>
+    </div>
+
+    <div class="footnote">Invoices are pulled directly from Stripe. Visibility here matches Sent Links — you'll only see invoices for jobs you're attached to on the Monday board.</div>
   </div>
 
   <script src="hub.js"></script>

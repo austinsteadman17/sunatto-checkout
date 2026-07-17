@@ -6,7 +6,7 @@
 //
 // Login is name + PIN, no email/password account system:
 //   - First visit on a device: enter first/last name. If that name has
-//     never been seen before, create a 4-6 digit PIN. If it has, enter
+//     never been seen before, create a 4-digit PIN. If it has, enter
 //     the existing PIN.
 //   - Later visits on the SAME device: the name is remembered in
 //     localStorage (persists across browser restarts), so only the PIN
@@ -108,6 +108,15 @@ const confirmResetPinButton = document.getElementById('confirm-reset-pin-button'
 const cancelResetPinButton = document.getElementById('cancel-reset-pin-button');
 const adminUsersError = document.getElementById('admin-users-error');
 const adminUsersTableWrap = document.getElementById('admin-users-table-wrap');
+
+const invoicesNavButton = document.getElementById('invoices-nav-button');
+const invoicesView = document.getElementById('invoices-view');
+const backToHubFromInvoicesButton = document.getElementById('back-to-hub-from-invoices-button');
+const invoicesCountNote = document.getElementById('invoices-count-note');
+const invoicesSummaryStrip = document.getElementById('invoices-summary-strip');
+const invoicesSearchInput = document.getElementById('invoices-search-input');
+const invoicesError = document.getElementById('invoices-error');
+const invoicesTableWrap = document.getElementById('invoices-table-wrap');
 
 // --- PIN box enhancement --------------------------------------------
 // Purely visual: turns each real `<input type="password" maxlength="N">`
@@ -223,6 +232,9 @@ let currentIsAdmin = false;
 let adminUsers = [];
 let resetPinTargetUserId = null;
 
+let allInvoices = [];
+let invoicesLoaded = false;
+
 // --- storage helpers ---
 
 function getRememberedUser() {
@@ -272,6 +284,7 @@ function showLogin() {
   hubView.style.display = 'none';
   generateView.style.display = 'none';
   adminView.style.display = 'none';
+  invoicesView.style.display = 'none';
   loginView.style.display = 'block';
 }
 
@@ -279,6 +292,7 @@ function showHub() {
   loginView.style.display = 'none';
   generateView.style.display = 'none';
   adminView.style.display = 'none';
+  invoicesView.style.display = 'none';
   hubView.style.display = 'block';
 }
 
@@ -286,6 +300,7 @@ function showGenerate() {
   loginView.style.display = 'none';
   hubView.style.display = 'none';
   adminView.style.display = 'none';
+  invoicesView.style.display = 'none';
   generateView.style.display = 'block';
 }
 
@@ -293,7 +308,16 @@ function showAdmin() {
   loginView.style.display = 'none';
   hubView.style.display = 'none';
   generateView.style.display = 'none';
+  invoicesView.style.display = 'none';
   adminView.style.display = 'block';
+}
+
+function showInvoices() {
+  loginView.style.display = 'none';
+  hubView.style.display = 'none';
+  generateView.style.display = 'none';
+  adminView.style.display = 'none';
+  invoicesView.style.display = 'block';
 }
 
 function showStep(step) {
@@ -409,8 +433,8 @@ createPinButton.addEventListener('click', async () => {
   const pin = pinCreateField.value.trim();
   const confirmPin = pinConfirmField.value.trim();
 
-  if (!/^\d{4,6}$/.test(pin)) {
-    loginError.textContent = 'PIN must be 4-6 digits.';
+  if (!/^\d{4}$/.test(pin)) {
+    loginError.textContent = 'PIN must be 4 digits.';
     return;
   }
   if (pin !== confirmPin) {
@@ -956,8 +980,8 @@ savePinButton.addEventListener('click', async () => {
     changePinError.textContent = 'Enter your current PIN.';
     return;
   }
-  if (!/^\d{4,6}$/.test(newPin)) {
-    changePinError.textContent = 'New PIN must be 4-6 digits.';
+  if (!/^\d{4}$/.test(newPin)) {
+    changePinError.textContent = 'New PIN must be 4 digits.';
     return;
   }
   if (newPin !== confirmPin) {
@@ -1082,8 +1106,8 @@ cancelResetPinButton.addEventListener('click', () => {
 
 confirmResetPinButton.addEventListener('click', async () => {
   const newPin = resetPinField.value.trim();
-  if (!/^\d{4,6}$/.test(newPin)) {
-    resetPinError.textContent = 'New PIN must be 4-6 digits.';
+  if (!/^\d{4}$/.test(newPin)) {
+    resetPinError.textContent = 'New PIN must be 4 digits.';
     return;
   }
 
@@ -1160,8 +1184,8 @@ createUserButton.addEventListener('click', async () => {
     createUserError.textContent = 'Enter a first and last name.';
     return;
   }
-  if (!/^\d{4,6}$/.test(pin)) {
-    createUserError.textContent = 'PIN must be 4-6 digits.';
+  if (!/^\d{4}$/.test(pin)) {
+    createUserError.textContent = 'PIN must be 4 digits.';
     return;
   }
 
@@ -1190,6 +1214,176 @@ createUserButton.addEventListener('click', async () => {
     createUserButton.textContent = 'Create User';
   }
 });
+
+// --- Invoices ---
+//
+// Pulls Stripe invoices via GET /api/invoices, scoped server-side the same
+// way Sent Links are (admins see everything, everyone else only sees
+// invoices for jobs they're attached to on the Monday board). "Send" only
+// appears for invoices still in "draft" or "open" — it finalizes (if
+// needed) and emails the invoice directly, same end result as clicking
+// "Finalize and send" in the Stripe dashboard.
+
+invoicesNavButton.addEventListener('click', () => {
+  showInvoices();
+  fetchInvoices();
+});
+
+backToHubFromInvoicesButton.addEventListener('click', () => {
+  showHub();
+});
+
+invoicesSearchInput.addEventListener('input', renderInvoicesTable);
+
+async function fetchInvoices() {
+  invoicesError.textContent = '';
+  invoicesTableWrap.innerHTML = '<div class="empty-state">Loading…</div>';
+  try {
+    const res = await fetch('/api/invoices', { headers: { 'X-Hub-Session': getSessionToken() } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load invoices.');
+    allInvoices = data.invoices || [];
+    invoicesLoaded = true;
+    invoicesCountNote.textContent = data.isAdmin
+      ? `Showing all ${allInvoices.length} invoice${allInvoices.length === 1 ? '' : 's'}.`
+      : `Showing ${allInvoices.length} invoice${allInvoices.length === 1 ? '' : 's'} for jobs you're attached to.`;
+    renderInvoicesTable();
+  } catch (err) {
+    invoicesTableWrap.innerHTML = '';
+    invoicesError.textContent = err.message;
+  }
+}
+
+function renderInvoicesSummary(invoices) {
+  const draft = invoices.filter((i) => i.status === 'draft');
+  const open = invoices.filter((i) => i.status === 'open');
+  const paid = invoices.filter((i) => i.status === 'paid');
+  const outstanding = open.reduce((sum, i) => sum + (i.amountDueCents || 0), 0);
+
+  const icon = (path) => `<span class="pill-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
+  const iconDraft = icon('<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>');
+  const iconClock = icon('<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path>');
+  const iconCheck = icon('<circle cx="12" cy="12" r="9"></circle><path d="m8.5 12.5 2.5 2.5 5-5"></path>');
+  const iconMoney = icon('<rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle>');
+
+  invoicesSummaryStrip.innerHTML = `
+    <div class="summary-pill"><span class="pill-icon">${iconDraft}</span><div><strong>${draft.length}</strong>Drafts</div></div>
+    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${open.length}</strong>Sent, unpaid</div></div>
+    <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paid.length}</strong>Paid</div></div>
+    <div class="summary-pill icon-money">${iconMoney}<div><strong>${fmtMoney(outstanding)}</strong>Outstanding</div></div>
+  `;
+}
+
+function matchesInvoiceSearch(invoice, query) {
+  if (!query) return true;
+  const haystack = `${invoice.customerName} ${invoice.jobName || ''} ${invoice.jobAddress || ''}`.toLowerCase();
+  return haystack.includes(query.toLowerCase());
+}
+
+const INVOICE_STATUS_LABELS = {
+  draft: 'Draft',
+  open: 'Sent',
+  paid: 'Paid',
+  uncollectible: 'Uncollectible',
+  void: 'Void',
+};
+
+function renderInvoicesTable() {
+  const query = invoicesSearchInput.value.trim();
+  const invoices = allInvoices.filter((i) => matchesInvoiceSearch(i, query));
+
+  renderInvoicesSummary(allInvoices);
+
+  if (invoices.length === 0) {
+    invoicesTableWrap.innerHTML = `<div class="empty-state">${
+      allInvoices.length === 0
+        ? 'No invoices found for your jobs yet.'
+        : 'No invoices match your search.'
+    }</div>`;
+    return;
+  }
+
+  const rows = invoices.map((invoice) => {
+    const statusLabel = INVOICE_STATUS_LABELS[invoice.status] || invoice.status;
+    const statusBadge = `<span class="badge ${invoice.status}">${statusLabel}</span>`;
+    const typeBadge = invoice.type
+      ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
+      : '—';
+    const viewUrl = invoice.hostedInvoiceUrl || invoice.dashboardUrl;
+    const canSend = invoice.status === 'draft' || invoice.status === 'open';
+
+    return `
+      <tr data-id="${invoice.id}">
+        <td>
+          <div class="cust-name">${escapeHtml(invoice.customerName || invoice.customerEmail || '(no name)')}</div>
+          <div class="cust-sub">${escapeHtml(invoice.jobAddress || '')}</div>
+          <div class="cust-sub">${escapeHtml(invoice.customerEmail || '')}${invoice.number ? ' · ' + escapeHtml(invoice.number) : ''}</div>
+        </td>
+        <td>${typeBadge}</td>
+        <td>${fmtMoney(invoice.totalCents)}</td>
+        <td>${statusBadge}</td>
+        <td>${fmtDate(invoice.created)}</td>
+        <td>
+          <div class="row-actions">
+            <a class="secondary" style="text-decoration:none; display:inline-flex; align-items:center;" href="${escapeHtml(viewUrl)}" target="_blank" rel="noopener">View</a>
+            <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'}>${invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent'}</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  invoicesTableWrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Customer</th>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  invoicesTableWrap.querySelectorAll('.send-invoice-btn').forEach((btn) => {
+    btn.addEventListener('click', () => sendInvoiceFromHub(btn));
+  });
+}
+
+async function sendInvoiceFromHub(btn) {
+  const id = btn.getAttribute('data-id');
+  const invoice = allInvoices.find((i) => i.id === id);
+  if (!invoice) return;
+
+  const label = invoice.customerName || invoice.customerEmail || 'this customer';
+  const verb = invoice.status === 'open' ? 're-send' : 'send';
+  if (!window.confirm(`${verb === 'send' ? 'Send' : 'Re-send'} this invoice (${fmtMoney(invoice.totalCents)}) to ${label} now? This emails them a real payment request.`)) {
+    return;
+  }
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  invoicesError.textContent = '';
+
+  try {
+    const res = await fetch(`/api/invoices/${id}/send`, {
+      method: 'POST',
+      headers: { 'X-Hub-Session': getSessionToken() },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not send invoice.');
+    await fetchInvoices();
+  } catch (err) {
+    invoicesError.textContent = err.message;
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
 
 // --- boot ---
 
