@@ -118,6 +118,48 @@ const invoicesSearchInput = document.getElementById('invoices-search-input');
 const invoicesError = document.getElementById('invoices-error');
 const invoicesTableWrap = document.getElementById('invoices-table-wrap');
 
+// --- Custom confirm modal -------------------------------------------
+// Replaces window.confirm() (which renders as a plain, unstyled browser
+// dialog) with a modal that matches the rest of the hub's design system.
+const confirmModalOverlay = document.getElementById('confirm-modal-overlay');
+const confirmModalTitle = document.getElementById('confirm-modal-title');
+const confirmModalMessage = document.getElementById('confirm-modal-message');
+const confirmModalOkButton = document.getElementById('confirm-modal-ok');
+const confirmModalCancelButton = document.getElementById('confirm-modal-cancel');
+const confirmModalIcon = document.getElementById('confirm-modal-icon');
+const CONFIRM_MODAL_ICON_SEND = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"></path><path d="M22 2 15 22l-4-9-9-4 20-7z"></path></svg>';
+const CONFIRM_MODAL_ICON_DANGER = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+
+function showConfirmModal({ title = 'Are you sure?', message = '', confirmLabel = 'Confirm', danger = false } = {}) {
+  return new Promise((resolve) => {
+    confirmModalTitle.textContent = title;
+    confirmModalMessage.textContent = message;
+    confirmModalOkButton.textContent = confirmLabel;
+    confirmModalOkButton.classList.toggle('danger-action', danger);
+    confirmModalIcon.classList.toggle('danger-icon', danger);
+    confirmModalIcon.innerHTML = danger ? CONFIRM_MODAL_ICON_DANGER : CONFIRM_MODAL_ICON_SEND;
+    confirmModalOverlay.style.display = 'flex';
+
+    function cleanup(result) {
+      confirmModalOverlay.style.display = 'none';
+      confirmModalOkButton.removeEventListener('click', onOk);
+      confirmModalCancelButton.removeEventListener('click', onCancel);
+      confirmModalOverlay.removeEventListener('click', onOverlayClick);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onOk() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onOverlayClick(e) { if (e.target === confirmModalOverlay) cleanup(false); }
+    function onKeydown(e) { if (e.key === 'Escape') cleanup(false); }
+
+    confirmModalOkButton.addEventListener('click', onOk);
+    confirmModalCancelButton.addEventListener('click', onCancel);
+    confirmModalOverlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeydown);
+  });
+}
+
 // --- PIN box enhancement --------------------------------------------
 // Purely visual: turns each real `<input type="password" maxlength="N">`
 // PIN field into a row of single-digit boxes, without changing how the
@@ -1154,7 +1196,13 @@ async function toggleAdmin(btn) {
 }
 
 async function deleteUser(userId, name) {
-  if (!window.confirm(`Delete the hub account for ${name}? They'll need to create a new account (with a new PIN) if they need access again.`)) {
+  const confirmed = await showConfirmModal({
+    title: 'Delete this account?',
+    message: `Delete the hub account for ${name}? They'll need to create a new account (with a new PIN) if they need access again.`,
+    confirmLabel: 'Delete account',
+    danger: true,
+  });
+  if (!confirmed) {
     return;
   }
   adminUsersError.textContent = '';
@@ -1325,9 +1373,9 @@ function renderInvoicesTable() {
         <td>${statusBadge}</td>
         <td>${fmtDate(invoice.created)}</td>
         <td>
-          <div class="row-actions">
-            ${hostedUrl ? `<a class="secondary" style="text-decoration:none; display:inline-flex; align-items:center;" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener">View</a>` : ''}
-            ${editUrl ? `<a class="secondary" style="text-decoration:none; display:inline-flex; align-items:center;" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener">Edit in Stripe</a>` : ''}
+          <div class="row-actions invoice-actions">
+            ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
+            ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
             <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'}>${invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent'}</button>
           </div>
         </td>
@@ -1363,7 +1411,12 @@ async function sendInvoiceFromHub(btn) {
 
   const label = invoice.customerName || invoice.customerEmail || 'this customer';
   const verb = invoice.status === 'open' ? 're-send' : 'send';
-  if (!window.confirm(`${verb === 'send' ? 'Send' : 'Re-send'} this invoice (${fmtMoney(invoice.totalCents)}) to ${label} now? This emails them a real payment request.`)) {
+  const confirmed = await showConfirmModal({
+    title: verb === 'send' ? 'Send this invoice?' : 'Re-send this invoice?',
+    message: `${verb === 'send' ? 'Send' : 'Re-send'} this invoice (${fmtMoney(invoice.totalCents)}) to ${label} now? This emails them a real payment request.`,
+    confirmLabel: verb === 'send' ? 'Send invoice' : 'Re-send invoice',
+  });
+  if (!confirmed) {
     return;
   }
 
