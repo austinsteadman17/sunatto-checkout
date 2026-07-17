@@ -175,6 +175,7 @@ function enhancePinInput(input, options = {}) {
   if (!input || input.dataset.enhanced) return;
   input.dataset.enhanced = 'true';
   const autoSubmit = !!options.autoSubmit;
+  const submitButton = options.submitButton || null;
 
   // Every PIN in this system has always been 4 digits in practice (the
   // server accepts 4-6 as a range, but nothing has ever used more than 4)
@@ -203,9 +204,13 @@ function enhancePinInput(input, options = {}) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
-  function clickClosestPrimaryButton() {
-    const card = input.closest('.card');
-    const btn = card && card.querySelector('button.primary');
+  function triggerSubmit() {
+    // Prefer the button this field was explicitly wired to. Several of
+    // these PIN steps share one parent .card with OTHER primary buttons
+    // (e.g. the name/PIN-login/create-account steps all live in the same
+    // card), so falling back to "the first .primary button in this card"
+    // can silently click the wrong one — only use that as a last resort.
+    const btn = submitButton || (input.closest('.card') && input.closest('.card').querySelector('button.primary'));
     if (btn && !btn.disabled) btn.click();
   }
 
@@ -218,7 +223,7 @@ function enhancePinInput(input, options = {}) {
       // Once every box has a digit, submit automatically — no need to
       // click the button or press Enter after typing the last digit.
       if (autoSubmit && box.value && boxes.every((b) => b.value)) {
-        clickClosestPrimaryButton();
+        triggerSubmit();
       }
     });
     box.addEventListener('keydown', (e) => {
@@ -226,7 +231,7 @@ function enhancePinInput(input, options = {}) {
         boxes[i - 1].focus();
       }
       if (e.key === 'Enter') {
-        clickClosestPrimaryButton();
+        triggerSubmit();
       }
     });
     box.addEventListener('paste', (e) => {
@@ -237,7 +242,7 @@ function enhancePinInput(input, options = {}) {
       boxes[nextEmpty === -1 ? boxes.length - 1 : nextEmpty].focus();
       writeThrough();
       if (autoSubmit && boxes.every((b) => b.value)) {
-        clickClosestPrimaryButton();
+        triggerSubmit();
       }
     });
   });
@@ -263,16 +268,14 @@ function enhancePinInput(input, options = {}) {
   input.focusFirstBox = () => boxes[0].focus();
 }
 
-enhancePinInput(pinLoginField, { autoSubmit: true });
-[
-  pinCreateField,
-  pinConfirmField,
-  currentPinField,
-  newPinField,
-  confirmNewPinField,
-  newUserPinField,
-  resetPinField,
-].forEach((el) => enhancePinInput(el));
+enhancePinInput(pinLoginField, { autoSubmit: true, submitButton: loginButton });
+enhancePinInput(pinCreateField, { submitButton: createPinButton });
+enhancePinInput(pinConfirmField, { submitButton: createPinButton });
+enhancePinInput(currentPinField, { submitButton: savePinButton });
+enhancePinInput(newPinField, { submitButton: savePinButton });
+enhancePinInput(confirmNewPinField, { submitButton: savePinButton });
+enhancePinInput(newUserPinField, { submitButton: createUserButton });
+enhancePinInput(resetPinField, { submitButton: confirmResetPinButton });
 
 let allLinks = [];
 let pendingName = { firstName: '', lastName: '' }; // held between the name step and the pin steps
