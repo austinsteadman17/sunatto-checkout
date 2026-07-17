@@ -1314,6 +1314,7 @@ app.get('/api/invoices', async (req, res) => {
 
     const results = [];
     for (const invoice of invoices) {
+      if (invoice.status === 'void') continue; // voided invoices are clutter, never shown
       if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs)) continue;
       const matchedJob = findMatchedJob(invoice, normalizedJobs);
       results.push(publicInvoice(invoice, matchedJob));
