@@ -1255,7 +1255,22 @@ function invoiceMatchesJobs(invoice, normalizedJobs) {
   return normalizedJobs.some((j) => j.email === email);
 }
 
+// A customer can submit payment on an invoice (e.g. ACH/bank debit)
+// that then takes several business days to actually clear. During
+// that window the Invoice itself is still "open" with amount_paid=0
+// (Stripe doesn't mark it paid until the underlying charge settles),
+// but there IS a PaymentIntent sitting in "processing" — that's our
+// signal that someone already submitted payment and this should NOT
+// be treated as untouched/unpaid (no resend, no re-invoicing).
+function invoicePaymentIsProcessing(invoice) {
+  const pi = invoice.payment_intent;
+  if (!pi || typeof pi !== 'object') return false;
+  return invoice.status === 'open' && pi.status === 'processing';
+}
+
 function publicInvoice(invoice, matchedJob) {
+  const paymentProcessing = invoicePaymentIsProcessing(invoice);
+  const pi = paymentProcessing ? invoice.payment_intent : null;
   return {
     id: invoice.id,
     number: invoice.number,
@@ -1272,6 +1287,10 @@ function publicInvoice(invoice, matchedJob) {
     type: guessInvoiceType(invoice.total, matchedJob ? matchedJob.totalCostCents : null),
     jobName: matchedJob ? matchedJob.rawName : null,
     jobAddress: matchedJob ? matchedJob.rawAddress : null,
+    // True when the customer already submitted payment and it's just
+    // waiting to clear (e.g. ACH bank debit, ~4-5 business days).
+    paymentProcessing,
+    paymentProcessingSince: pi && pi.created ? new Date(pi.created * 1000).toISOString() : null,
   };
 }
 
@@ -1296,7 +1315,14 @@ async function listAllStripeInvoices() {
   const invoices = [];
   let startingAfter;
   for (let page = 0; page < MAX_INVOICE_PAGES; page += 1) {
-    const result = await stripe.invoices.list({ limit: 100, starting_after: startingAfter });
+    // Expand payment_intent so we can tell "nothing submitted yet" apart
+    // from "customer submitted payment, it's still clearing" — see
+    // invoicePaymentIsProcessing() / publicInvoice() above.
+    const result = await stripe.invoices.list({
+      limit: 100,
+      starting_after: startingAfter,
+      expand: ['data.payment_intent'],
+    });
     invoices.push(...result.data);
     if (!result.has_more) break;
     startingAfter = result.data[result.data.length - 1].id;
@@ -1339,7 +1365,7 @@ app.post('/api/invoices/:id/send', async (req, res) => {
   if (!user) return;
   try {
     const admin = isUserAdmin(user);
-    const invoice = await stripe.invoices.retrieve(req.params.id);
+    const invoice = await stripe.invoices.retrieve(req.params.id, { expand: ['payment_intent'] });
 
     if (!admin) {
       const normalizedJobs = await buildNormalizedJobsForUser(user, false);
@@ -1350,6 +1376,13 @@ app.post('/api/invoices/:id/send', async (req, res) => {
 
     if (!['draft', 'open'].includes(invoice.status)) {
       return res.status(400).json({ error: `This invoice is already "${invoice.status}" — nothing to send.` });
+    }
+
+    // Customer already submitted payment (e.g. an ACH bank debit) and
+    // it's just waiting to clear — don't resend/re-invoice them while
+    // that's in flight, even if someone bypasses the disabled button.
+    if (invoicePaymentIsProcessing(invoice)) {
+      return res.status(400).json({ error: 'This invoice already has a payment submitted and processing — no need to resend.' });
     }
 
     const finalized = invoice.status === 'draft'
