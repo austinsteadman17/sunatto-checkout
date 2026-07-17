@@ -49,7 +49,6 @@ const jobCountNote = document.getElementById('job-count-note');
 const refreshButton = document.getElementById('refresh-button');
 const generateLinkButton = document.getElementById('generate-link-button');
 const searchInput = document.getElementById('search-input');
-const summaryStrip = document.getElementById('summary-strip');
 const hubError = document.getElementById('hub-error');
 const tableWrap = document.getElementById('table-wrap');
 
@@ -111,7 +110,8 @@ const adminUsersTableWrap = document.getElementById('admin-users-table-wrap');
 
 const invoicesNavButton = document.getElementById('invoices-nav-button');
 const invoicesView = document.getElementById('invoices-view');
-const backToHubFromInvoicesButton = document.getElementById('back-to-hub-from-invoices-button');
+const voidedNavButton = document.getElementById('voided-nav-button');
+const invoicesRefreshButton = document.getElementById('invoices-refresh-button');
 const invoicesCountNote = document.getElementById('invoices-count-note');
 const invoicesSummaryStrip = document.getElementById('invoices-summary-strip');
 const invoicesSearchInput = document.getElementById('invoices-search-input');
@@ -156,6 +156,58 @@ function showConfirmModal({ title = 'Are you sure?', message = '', confirmLabel 
     confirmModalOkButton.addEventListener('click', onOk);
     confirmModalCancelButton.addEventListener('click', onCancel);
     confirmModalOverlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeydown);
+  });
+}
+
+// --- Void-invoice modal (asks for a reason) ---------------------------
+// A separate modal from the plain confirm one above because voiding a
+// sent invoice needs a reason captured — both so the Voided tab shows
+// WHY something was pulled out of the active list (e.g. "customer paid
+// by credit card instead"), and in case Stripe itself ever surfaces that
+// reason back to us. Resolves with the trimmed reason string, or null if
+// the person cancelled.
+const voidReasonModalOverlay = document.getElementById('void-reason-modal-overlay');
+const voidReasonModalTitle = document.getElementById('void-reason-modal-title');
+const voidReasonModalMessage = document.getElementById('void-reason-modal-message');
+const voidReasonTextarea = document.getElementById('void-reason-textarea');
+const voidReasonModalError = document.getElementById('void-reason-modal-error');
+const voidReasonModalOkButton = document.getElementById('void-reason-modal-ok');
+const voidReasonModalCancelButton = document.getElementById('void-reason-modal-cancel');
+
+function showVoidReasonModal({ title = 'Void this invoice?', message = '' } = {}) {
+  return new Promise((resolve) => {
+    voidReasonModalTitle.textContent = title;
+    voidReasonModalMessage.textContent = message;
+    voidReasonTextarea.value = '';
+    voidReasonModalError.textContent = '';
+    voidReasonModalOverlay.style.display = 'flex';
+    setTimeout(() => voidReasonTextarea.focus(), 0);
+
+    function cleanup(result) {
+      voidReasonModalOverlay.style.display = 'none';
+      voidReasonModalOkButton.removeEventListener('click', onOk);
+      voidReasonModalCancelButton.removeEventListener('click', onCancel);
+      voidReasonModalOverlay.removeEventListener('click', onOverlayClick);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onOk() {
+      const reason = voidReasonTextarea.value.trim();
+      if (!reason) {
+        voidReasonModalError.textContent = 'Enter a reason for the void.';
+        voidReasonTextarea.focus();
+        return;
+      }
+      cleanup(reason);
+    }
+    function onCancel() { cleanup(null); }
+    function onOverlayClick(e) { if (e.target === voidReasonModalOverlay) cleanup(null); }
+    function onKeydown(e) { if (e.key === 'Escape') cleanup(null); }
+
+    voidReasonModalOkButton.addEventListener('click', onOk);
+    voidReasonModalCancelButton.addEventListener('click', onCancel);
+    voidReasonModalOverlay.addEventListener('click', onOverlayClick);
     document.addEventListener('keydown', onKeydown);
   });
 }
@@ -292,6 +344,8 @@ let resetPinTargetUserId = null;
 
 let allInvoices = [];
 let invoicesLoaded = false;
+
+let allVoidedInvoices = [];
 
 // --- storage helpers ---
 
@@ -604,23 +658,15 @@ async function loadAndRender() {
       .slice(0, 2)
       .map((part) => part[0].toUpperCase())
       .join('');
-    jobCountNote.textContent = data.isAdmin
-      ? ''
-      : data.jobCount
-        ? `Showing links for the ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} you're attached to on the Monday board.`
-        : 'No jobs on the Monday board are attached to your name yet — once you’re added as Sales Rep, Office, or Manager on a job, its links will show up here.';
 
     hubError.textContent = '';
     await refreshAdminButton();
 
-    // Sent Links' own table is rendered now too (even though it isn't
-    // the visible view below) so it's instantly ready the moment someone
-    // clicks over to it — same "render hidden, show later" trick used
-    // for Invoices pre-loading before Invoices became the default view.
-    renderTable();
-
-    // Invoices is the primary view shown right after login — Sent Links
-    // is the secondary one, reached via its own nav button from here.
+    // Invoices is the one, merged main view — payment links and invoices
+    // are shown together there (see renderInvoicesTable/renderCombinedTable
+    // below). Voided is the secondary view, reached via its own nav button
+    // and loaded lazily (see fetchVoidedInvoices) since it's visited far
+    // less often.
     showInvoices();
     await fetchInvoices();
   } catch (err) {
@@ -646,82 +692,75 @@ async function loadAndRender() {
   }
 }
 
-function renderSummary(links) {
-  const paid = links.filter((l) => l.paid);
-  const unpaid = links.filter((l) => !l.paid);
-  const collected = paid.reduce((sum, l) => sum + (l.amountCents || 0), 0);
-  const outstanding = unpaid.reduce((sum, l) => sum + (l.amountCents || 0), 0);
-
-  const icon = (path) => `<span class="pill-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
-  const iconSend = icon('<path d="M22 2 11 13"></path><path d="M22 2 15 22l-4-9-9-4 20-7Z"></path>');
-  const iconCheck = icon('<circle cx="12" cy="12" r="9"></circle><path d="m8.5 12.5 2.5 2.5 5-5"></path>');
-  const iconClock = icon('<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path>');
-  const iconMoney = icon('<rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle>');
-
-  summaryStrip.innerHTML = `
-    <div class="summary-pill">${iconSend}<div><strong>${links.length}</strong>Links sent</div></div>
-    <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paid.length}</strong>Paid</div></div>
-    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${unpaid.length}</strong>Unpaid</div></div>
-    <div class="summary-pill icon-money">${iconMoney}<div><strong>${fmtMoney(collected)}</strong>Collected</div></div>
-    <div class="summary-pill">${iconMoney}<div><strong>${fmtMoney(outstanding)}</strong>Outstanding</div></div>
-  `;
-}
-
 function matchesSearch(link, query) {
   if (!query) return true;
   const haystack = `${link.customerName} ${link.jobAddress}`.toLowerCase();
   return haystack.includes(query.toLowerCase());
 }
 
-function renderTable() {
+// --- Voided tab ---------------------------------------------------------
+// Shows invoices that have been voided (via the Void button on the main
+// page below, or directly in the Stripe dashboard) — kept here as a
+// record instead of just disappearing, since a deleted draft is gone for
+// good but a voided invoice's whole point is that Stripe (and now the
+// hub) keeps track of it.
+
+async function fetchVoidedInvoices() {
+  hubError.textContent = '';
+  jobCountNote.textContent = '';
+  tableWrap.innerHTML = '<div class="empty-state">Loading…</div>';
+  try {
+    const res = await fetch('/api/invoices/voided', { headers: { 'X-Hub-Session': getSessionToken() } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load voided invoices.');
+    allVoidedInvoices = data.invoices || [];
+    renderVoidedTable();
+  } catch (err) {
+    tableWrap.innerHTML = '';
+    hubError.textContent = err.message;
+  }
+}
+
+function matchesVoidedSearch(invoice, query) {
+  if (!query) return true;
+  const haystack = `${invoice.customerName} ${invoice.jobName || ''} ${invoice.jobAddress || ''}`.toLowerCase();
+  return haystack.includes(query.toLowerCase());
+}
+
+function renderVoidedTable() {
   const query = searchInput.value.trim();
-  renderSummary(allLinks);
+  const invoices = allVoidedInvoices.filter((i) => matchesVoidedSearch(i, query));
 
-  // A non-empty search now cross-references Invoices too, so the same
-  // name only has to be typed once — see renderCombinedTable below.
-  if (query) {
-    renderCombinedTable(tableWrap, query);
+  jobCountNote.textContent = `Showing ${invoices.length} voided invoice${invoices.length === 1 ? '' : 's'}.`;
+
+  if (invoices.length === 0) {
+    tableWrap.innerHTML = `<div class="empty-state">${
+      query ? `No voided invoices match "${escapeHtml(query)}".` : 'No invoices have been voided yet.'
+    }</div>`;
     return;
   }
 
-  const links = allLinks;
-
-  if (links.length === 0) {
-    tableWrap.innerHTML = `<div class="empty-state">No links to show yet for your jobs. They’ll show up here as soon as a rep sends one from the intake page for a job you’re attached to.</div>`;
-    return;
-  }
-
-  const rows = links.map((link) => {
-    const typeLabel = link.type === 'deposit' ? '20% Deposit' : '80% Balance';
-    const statusBadge = link.paid
-      ? '<span class="badge paid">Paid</span>'
-      : '<span class="badge unpaid">Unpaid</span>';
-    const sentInfo = link.sentCount > 1
-      ? `${fmtDateShort(link.lastSentAt)} <span class="cust-sub">(sent ${link.sentCount}×)</span>`
-      : fmtDateShort(link.lastSentAt);
-    const mondayStatus = link.mondayStatus
-      ? `<span class="badge monday-status">${escapeHtml(link.mondayStatus)}</span>`
+  const rows = invoices.map((invoice) => {
+    const typeBadge = invoice.type
+      ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
       : '—';
-
-    const canResend = !!link.customerEmail;
+    const editUrl = invoice.dashboardUrl;
 
     return `
-      <tr data-id="${link.id}">
+      <tr data-id="${invoice.id}">
         <td>
-          <div class="cust-name">${escapeHtml(link.customerName || '(no name)')}</div>
-          <div class="cust-sub">${escapeHtml(link.jobAddress || '')}</div>
-          <div class="cust-sub">${escapeHtml(link.customerEmail || '')}${link.customerPhone ? ' · ' + escapeHtml(link.customerPhone) : ''}</div>
+          <div class="cust-name">${escapeHtml(invoice.customerName || invoice.customerEmail || '(no name)')}</div>
+          <div class="cust-sub">${escapeHtml(invoice.jobAddress || '')}</div>
+          <div class="cust-sub">${escapeHtml(invoice.customerEmail || '')}${invoice.number ? ' · ' + escapeHtml(invoice.number) : ''}</div>
         </td>
-        <td><span class="badge ${link.type}">${typeLabel}</span></td>
-        <td>${fmtMoney(link.amountCents)}</td>
-        <td>${statusBadge}</td>
-        <td>${mondayStatus}</td>
-        <td>${sentInfo}</td>
+        <td>${typeBadge}</td>
+        <td>${fmtMoney(invoice.totalCents)}</td>
+        <td>${invoice.voidReason ? escapeHtml(invoice.voidReason) : '<span class="cust-sub">No reason on file</span>'}</td>
+        <td>${invoice.voidedByName ? escapeHtml(invoice.voidedByName) : '—'}</td>
+        <td>${fmtDateShort(invoice.voidedAt || invoice.created)}</td>
         <td>
           <div class="row-actions">
-            <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
-            <button type="button" class="secondary resend-btn" data-id="${link.id}" ${canResend ? '' : 'disabled title="No email on file"'}>Resend</button>
-            ${currentIsAdmin ? `<button type="button" class="secondary void-btn" data-id="${link.id}" data-name="${escapeHtml(link.customerName || 'this link')}" title="Remove a stale/incorrect link from the hub">Void</button>` : ''}
+            ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="View in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
           </div>
         </td>
       </tr>
@@ -735,25 +774,15 @@ function renderTable() {
           <th>Customer</th>
           <th>Type</th>
           <th>Amount</th>
-          <th>Status</th>
-          <th>Monday Status</th>
-          <th>Last Sent</th>
+          <th>Void Reason</th>
+          <th>Voided By</th>
+          <th>Voided</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
-
-  tableWrap.querySelectorAll('.copy-btn').forEach((btn) => {
-    btn.addEventListener('click', () => copyLink(btn));
-  });
-  tableWrap.querySelectorAll('.resend-btn').forEach((btn) => {
-    btn.addEventListener('click', () => resendLink(btn));
-  });
-  tableWrap.querySelectorAll('.void-btn').forEach((btn) => {
-    btn.addEventListener('click', () => voidLink(btn));
-  });
 }
 
 async function copyLink(btn) {
@@ -823,7 +852,6 @@ async function voidLink(btn) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not void link.');
     allLinks = allLinks.filter((l) => l.id !== id);
-    renderTable();
     renderInvoicesTable();
   } catch (err) {
     hubError.textContent = err.message;
@@ -832,8 +860,9 @@ async function voidLink(btn) {
   }
 }
 
-refreshButton.addEventListener('click', loadAndRender);
-searchInput.addEventListener('input', renderTable);
+refreshButton.addEventListener('click', fetchVoidedInvoices);
+invoicesRefreshButton.addEventListener('click', loadAndRender);
+searchInput.addEventListener('input', renderVoidedTable);
 
 // --- Generate Payment Link ---
 //
@@ -1084,7 +1113,7 @@ backToListButton.addEventListener('click', () => {
   jobPickerStep.style.display = 'block';
 });
 backToHubButton.addEventListener('click', () => {
-  showHub();
+  showInvoices();
 });
 
 // --- Change PIN (self-service, anyone) ---
@@ -1168,7 +1197,7 @@ adminButton.addEventListener('click', () => {
 });
 
 backToHubFromAdminButton.addEventListener('click', () => {
-  showHub();
+  showInvoices();
 });
 
 async function fetchAdminUsers() {
@@ -1382,11 +1411,21 @@ invoicesNavButton.addEventListener('click', () => {
   fetchInvoices();
 });
 
-backToHubFromInvoicesButton.addEventListener('click', () => {
+voidedNavButton.addEventListener('click', () => {
   showHub();
+  fetchVoidedInvoices();
 });
 
 invoicesSearchInput.addEventListener('input', renderInvoicesTable);
+
+let lastInvoicesIsAdmin = false;
+
+function updateInvoicesCountNote() {
+  const total = allInvoices.length + allLinks.length;
+  invoicesCountNote.textContent = lastInvoicesIsAdmin
+    ? `Showing all ${total} payment link${total === 1 ? '' : 's'} & invoice${total === 1 ? '' : 's'}.`
+    : `Showing ${total} payment link${total === 1 ? '' : 's'} & invoice${total === 1 ? '' : 's'} for jobs you're attached to.`;
+}
 
 async function fetchInvoices() {
   invoicesError.textContent = '';
@@ -1397,9 +1436,7 @@ async function fetchInvoices() {
     if (!res.ok) throw new Error(data.error || 'Could not load invoices.');
     allInvoices = data.invoices || [];
     invoicesLoaded = true;
-    invoicesCountNote.textContent = data.isAdmin
-      ? `Showing all ${allInvoices.length} invoice${allInvoices.length === 1 ? '' : 's'}.`
-      : `Showing ${allInvoices.length} invoice${allInvoices.length === 1 ? '' : 's'} for jobs you're attached to.`;
+    lastInvoicesIsAdmin = !!data.isAdmin;
     renderInvoicesTable();
   } catch (err) {
     invoicesTableWrap.innerHTML = '';
@@ -1407,38 +1444,45 @@ async function fetchInvoices() {
   }
 }
 
-// Two rows, same 4 columns (Drafts / Sent, unpaid / Processing / Paid):
-// top row is how many invoices are in that state, bottom row is the $
-// total for that exact same set, so each column reads top-to-bottom as
-// "how many, how much" instead of a separate one-off "Outstanding" pill.
-function renderInvoicesSummary(invoices) {
-  const draft = invoices.filter((i) => i.status === 'draft');
+// Combined summary across BOTH payment links and invoices — 6 pills: top
+// row is counts (Unpaid / Processing / Paid), bottom row is the $ total
+// for that exact same set, so each column reads top-to-bottom as "how
+// many, how much." Drafts aren't tallied here since payment links have no
+// draft state — a draft invoice still shows fine in the table's Status
+// column, it just isn't one of these 6 pills. Only invoices can ever be
+// Processing (an ACH payment mid-flight) or Draft — payment links are
+// always simply paid or unpaid.
+function renderInvoicesSummary(invoices, links) {
   const processing = invoices.filter((i) => i.paymentProcessing);
-  // "Sent, unpaid" excludes ones already processing a payment — otherwise
+  // "Unpaid" excludes invoices already processing a payment — otherwise
   // the same invoice would silently double-count across both columns,
   // and staff would still read it as "nothing's happened yet."
-  const open = invoices.filter((i) => i.status === 'open' && !i.paymentProcessing);
-  const paid = invoices.filter((i) => i.status === 'paid');
+  const openInvoices = invoices.filter((i) => i.status === 'open' && !i.paymentProcessing);
+  const paidInvoices = invoices.filter((i) => i.status === 'paid');
+  const unpaidLinks = links.filter((l) => !l.paid);
+  const paidLinks = links.filter((l) => l.paid);
 
-  const draftCents = draft.reduce((sum, i) => sum + (i.totalCents || 0), 0);
-  const openCents = open.reduce((sum, i) => sum + (i.amountDueCents || 0), 0);
+  const unpaidCount = openInvoices.length + unpaidLinks.length;
+  const processingCount = processing.length;
+  const paidCount = paidInvoices.length + paidLinks.length;
+
+  const unpaidCents = openInvoices.reduce((sum, i) => sum + (i.amountDueCents || 0), 0)
+    + unpaidLinks.reduce((sum, l) => sum + (l.amountCents || 0), 0);
   const processingCents = processing.reduce((sum, i) => sum + (i.amountDueCents || 0), 0);
-  const paidCents = paid.reduce((sum, i) => sum + (i.amountPaidCents || i.totalCents || 0), 0);
+  const paidCents = paidInvoices.reduce((sum, i) => sum + (i.amountPaidCents || i.totalCents || 0), 0)
+    + paidLinks.reduce((sum, l) => sum + (l.amountCents || 0), 0);
 
   const icon = (path) => `<span class="pill-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg></span>`;
-  const iconDraft = icon('<path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>');
   const iconClock = icon('<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 3"></path>');
   const iconProcessing = icon('<path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 3v6h-6"></path>');
   const iconCheck = icon('<circle cx="12" cy="12" r="9"></circle><path d="m8.5 12.5 2.5 2.5 5-5"></path>');
   const iconMoney = icon('<rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle>');
 
   invoicesSummaryStrip.innerHTML = `
-    <div class="summary-pill"><span class="pill-icon">${iconDraft}</span><div><strong>${draft.length}</strong>Drafts</div></div>
-    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${open.length}</strong>Sent, unpaid</div></div>
-    <div class="summary-pill icon-processing">${iconProcessing}<div><strong>${processing.length}</strong>Processing</div></div>
-    <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paid.length}</strong>Paid</div></div>
-    <div class="summary-pill money"><span class="pill-icon">${iconMoney}</span><div><strong>${fmtMoney(draftCents)}</strong>Draft value</div></div>
-    <div class="summary-pill money icon-unpaid">${iconMoney}<div><strong>${fmtMoney(openCents)}</strong>Unpaid value</div></div>
+    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${unpaidCount}</strong>Unpaid</div></div>
+    <div class="summary-pill icon-processing">${iconProcessing}<div><strong>${processingCount}</strong>Processing</div></div>
+    <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paidCount}</strong>Paid</div></div>
+    <div class="summary-pill money icon-unpaid">${iconMoney}<div><strong>${fmtMoney(unpaidCents)}</strong>Unpaid value</div></div>
     <div class="summary-pill money icon-processing">${iconMoney}<div><strong>${fmtMoney(processingCents)}</strong>Processing value</div></div>
     <div class="summary-pill money icon-paid">${iconMoney}<div><strong>${fmtMoney(paidCents)}</strong>Paid value</div></div>
   `;
@@ -1544,6 +1588,13 @@ function renderCombinedRow(entry) {
     ? `<span class="badge monday-status">${escapeHtml(invoice.mondayStatus)}</span>`
     : '—';
 
+  // Delete (permanent, Stripe never saw it) only for still-draft invoices.
+  // Void (permanent, but Stripe keeps the record — see the Voided tab)
+  // only for sent/unpaid invoices, and never while a payment is mid-flight
+  // processing, since that payment could still land against it.
+  const showDelete = invoice.status === 'draft';
+  const showVoid = invoice.status === 'open' && !invoice.paymentProcessing;
+
   return `
     <tr data-id="${invoice.id}" data-source="invoice">
       <td>
@@ -1562,7 +1613,8 @@ function renderCombinedRow(entry) {
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
           ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
           <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
-          ${invoice.status === 'draft' ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
+          ${showDelete ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
+          ${showVoid ? `<button type="button" class="secondary void-invoice-btn" data-id="${invoice.id}" title="Void this invoice in Stripe and the hub (e.g. customer is paying another way)">Void</button>` : ''}
         </div>
       </td>
     </tr>
@@ -1573,7 +1625,9 @@ function renderCombinedTable(container, query) {
   const results = combinedSearchResults(query);
 
   if (results.length === 0) {
-    container.innerHTML = `<div class="empty-state">No payment links or invoices match "${escapeHtml(query)}".</div>`;
+    container.innerHTML = query
+      ? `<div class="empty-state">No payment links or invoices match "${escapeHtml(query)}".</div>`
+      : `<div class="empty-state">No payment links or invoices yet.</div>`;
     return;
   }
 
@@ -1600,94 +1654,18 @@ function renderCombinedTable(container, query) {
   container.querySelectorAll('.void-btn').forEach((btn) => btn.addEventListener('click', () => voidLink(btn)));
   container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
   container.querySelectorAll('.delete-invoice-btn').forEach((btn) => btn.addEventListener('click', () => deleteInvoiceDraft(btn)));
+  container.querySelectorAll('.void-invoice-btn').forEach((btn) => btn.addEventListener('click', () => voidInvoiceSent(btn)));
 }
 
+// The merged main page: payment links and invoices always shown together
+// (Source column visible), not just when searching — searching just
+// narrows the same combined table. See combinedSearchResults/
+// renderCombinedRow/renderCombinedTable above for the shared rendering.
 function renderInvoicesTable() {
   const query = invoicesSearchInput.value.trim();
-
-  renderInvoicesSummary(allInvoices);
-
-  // A non-empty search now cross-references Sent Links too, so the same
-  // name only has to be typed once — see renderCombinedTable above.
-  if (query) {
-    renderCombinedTable(invoicesTableWrap, query);
-    return;
-  }
-
-  const invoices = allInvoices;
-
-  if (invoices.length === 0) {
-    invoicesTableWrap.innerHTML = `<div class="empty-state">No invoices found for your jobs yet.</div>`;
-    return;
-  }
-
-  const rows = invoices.map((invoice) => {
-    const { label: statusLabel, badgeClass } = invoiceStatusInfo(invoice);
-    const statusBadge = `<span class="badge ${badgeClass}">${statusLabel}</span>`;
-    const typeBadge = invoice.type
-      ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
-      : '—';
-    const hostedUrl = invoice.hostedInvoiceUrl;
-    const editUrl = invoice.dashboardUrl;
-    const canSend = !invoice.paymentProcessing && (invoice.status === 'draft' || invoice.status === 'open');
-    const sendLabel = invoice.paymentProcessing
-      ? 'Processing'
-      : invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent';
-    const sendTitle = invoice.paymentProcessing
-      ? 'Payment already submitted and clearing — no need to resend.'
-      : '';
-
-    const mondayStatus = invoice.mondayStatus
-      ? `<span class="badge monday-status">${escapeHtml(invoice.mondayStatus)}</span>`
-      : '—';
-
-    return `
-      <tr data-id="${invoice.id}">
-        <td>
-          <div class="cust-name">${escapeHtml(invoice.customerName || invoice.customerEmail || '(no name)')}</div>
-          <div class="cust-sub">${escapeHtml(invoice.jobAddress || '')}</div>
-          <div class="cust-sub">${escapeHtml(invoice.customerEmail || '')}${invoice.number ? ' · ' + escapeHtml(invoice.number) : ''}</div>
-        </td>
-        <td>${typeBadge}</td>
-        <td>${fmtMoney(invoice.totalCents)}</td>
-        <td>${statusBadge}</td>
-        <td>${mondayStatus}</td>
-        <td>${fmtDateShort(invoice.created)}</td>
-        <td>
-          <div class="row-actions invoice-actions">
-            ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
-            ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
-            <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
-            ${invoice.status === 'draft' ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
-          </div>
-        </td>
-      </tr>
-    `;
-  }).join('');
-
-  invoicesTableWrap.innerHTML = `
-    <table>
-      <thead>
-        <tr>
-          <th>Customer</th>
-          <th>Type</th>
-          <th>Amount</th>
-          <th>Status</th>
-          <th>Monday Status</th>
-          <th>Created</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
-
-  invoicesTableWrap.querySelectorAll('.send-invoice-btn').forEach((btn) => {
-    btn.addEventListener('click', () => sendInvoiceFromHub(btn));
-  });
-  invoicesTableWrap.querySelectorAll('.delete-invoice-btn').forEach((btn) => {
-    btn.addEventListener('click', () => deleteInvoiceDraft(btn));
-  });
+  renderInvoicesSummary(allInvoices, allLinks);
+  updateInvoicesCountNote();
+  renderCombinedTable(invoicesTableWrap, query);
 }
 
 // Permanently deletes a still-draft invoice — both from this view AND the
@@ -1721,7 +1699,46 @@ async function deleteInvoiceDraft(btn) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not delete invoice.');
     allInvoices = allInvoices.filter((i) => i.id !== id);
-    renderTable();
+    renderInvoicesTable();
+  } catch (err) {
+    invoicesError.textContent = err.message;
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// Voids a SENT (open, unpaid) invoice — e.g. the customer said they'd pay
+// the invoice, then decided to pay by credit card instead (invoices
+// themselves have no card option here). Unlike the draft delete above,
+// this is permanent in Stripe too, but the record is kept (marked
+// "void") rather than erased — see the Voided tab, which is exactly why
+// a reason is captured here first.
+async function voidInvoiceSent(btn) {
+  const id = btn.getAttribute('data-id');
+  const invoice = allInvoices.find((i) => i.id === id);
+  if (!invoice) return;
+
+  const label = invoice.customerName || invoice.customerEmail || 'this customer';
+  const reason = await showVoidReasonModal({
+    title: 'Void this invoice?',
+    message: `Void the invoice for ${label} (${fmtMoney(invoice.totalCents)})? This is permanent in Stripe — use this when they're paying another way (e.g. credit card) instead of this invoice. It'll move to the Voided tab so there's still a record of it.`,
+  });
+  if (reason === null) return; // cancelled
+
+  invoicesError.textContent = '';
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Voiding…';
+
+  try {
+    const res = await fetch(`/api/invoices/${id}/void`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ reason }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not void invoice.');
+    allInvoices = allInvoices.filter((i) => i.id !== id);
     renderInvoicesTable();
   } catch (err) {
     invoicesError.textContent = err.message;
