@@ -786,8 +786,8 @@ app.post('/api/hub/create-user', async (req, res) => {
     if (!firstName || !lastName) {
       return res.status(400).json({ error: 'firstName and lastName are required.' });
     }
-    if (!/^\d{4,6}$/.test(pin || '')) {
-      return res.status(400).json({ error: 'PIN must be 4-6 digits.' });
+    if (!/^\d{4}$/.test(pin || '')) {
+      return res.status(400).json({ error: 'PIN must be 4 digits.' });
     }
 
     const users = await loadUsers();
@@ -892,8 +892,8 @@ app.post('/api/hub/change-pin', async (req, res) => {
     if (!currentPin || hashPin(currentPin, user.pinSalt) !== user.pinHash) {
       return res.status(401).json({ error: 'Current PIN is incorrect.' });
     }
-    if (!/^\d{4,6}$/.test(newPin || '')) {
-      return res.status(400).json({ error: 'New PIN must be 4-6 digits.' });
+    if (!/^\d{4}$/.test(newPin || '')) {
+      return res.status(400).json({ error: 'New PIN must be 4 digits.' });
     }
 
     const users = await loadUsers();
@@ -1229,8 +1229,8 @@ app.post('/api/admin/users', async (req, res) => {
     if (!firstName || !lastName) {
       return res.status(400).json({ error: 'firstName and lastName are required.' });
     }
-    if (!/^\d{4,6}$/.test(pin || '')) {
-      return res.status(400).json({ error: 'PIN must be 4-6 digits.' });
+    if (!/^\d{4}$/.test(pin || '')) {
+      return res.status(400).json({ error: 'PIN must be 4 digits.' });
     }
 
     const users = await loadUsers();
@@ -1269,8 +1269,8 @@ app.post('/api/admin/users/:id/reset-pin', async (req, res) => {
   if (!admin) return;
   try {
     const { newPin } = req.body;
-    if (!/^\d{4,6}$/.test(newPin || '')) {
-      return res.status(400).json({ error: 'New PIN must be 4-6 digits.' });
+    if (!/^\d{4}$/.test(newPin || '')) {
+      return res.status(400).json({ error: 'New PIN must be 4 digits.' });
     }
 
     const users = await loadUsers();
