@@ -1187,6 +1187,184 @@ async function findAndMarkLinkPaid(paymentIntent) {
 }
 
 // ---------------------------------------------------------------------
+// 7a2. Invoices — lets hub users see and send Stripe invoices for their
+// jobs without leaving the hub or touching the Stripe dashboard.
+// Visibility mirrors the payment-links table: admins see every invoice,
+// everyone else only sees invoices for jobs they're attached to on the
+// Monday board.
+//
+// These invoices are built by hand (or by the invoice-drafting
+// automation) directly against the Stripe API/dashboard, not through
+// this endpoint, so there's no metadata tag linking an invoice back to
+// a Monday job. Instead, invoices are matched to jobs by customer
+// email — exactly the value used to create/find the Stripe customer for
+// each job in the first place — with the invoice's "Installation
+// Address" custom field (when present) used as a tiebreaker for the
+// rare case where the same person/email has more than one job on the
+// board.
+// ---------------------------------------------------------------------
+const STRIPE_ACCOUNT_ID = 'acct_1TtX1FAKmB8qDjmo';
+
+function invoiceDashboardUrl(invoiceId) {
+  return `https://dashboard.stripe.com/${STRIPE_ACCOUNT_ID}/invoices/${invoiceId}`;
+}
+
+// Best-effort "deposit" vs "balance" label, since there's no metadata to
+// read directly: compare the invoice total against the matched job's
+// Total Cost. ~20% -> deposit, ~80% -> balance, otherwise unlabeled
+// (e.g. a one-off invoice, or a job we couldn't confidently match).
+function guessInvoiceType(totalCents, totalCostCents) {
+  if (!totalCostCents) return null;
+  const ratio = totalCents / totalCostCents;
+  if (Math.abs(ratio - 0.2) < 0.03) return 'deposit';
+  if (Math.abs(ratio - 0.8) < 0.03) return 'balance';
+  return null;
+}
+
+function invoiceInstallationAddress(invoice) {
+  const field = (invoice.custom_fields || []).find((f) =>
+    (f.name || '').toLowerCase().includes('installation address')
+  );
+  return field ? normalizeAddressForMatch(field.value) : null;
+}
+
+// Every Monday job whose email matches this invoice's customer email.
+// Usually exactly one; if a person/email has multiple jobs, narrows
+// down using the invoice's Installation Address custom field when
+// available, otherwise just picks the first as a best guess (matching
+// ANY of them is enough to grant visibility either way).
+function findMatchedJob(invoice, normalizedJobs) {
+  const email = (invoice.customer_email || '').toLowerCase().trim();
+  if (!email) return null;
+  const candidates = normalizedJobs.filter((j) => j.email === email);
+  if (candidates.length <= 1) return candidates[0] || null;
+
+  const invoiceAddress = invoiceInstallationAddress(invoice);
+  if (invoiceAddress) {
+    const byAddress = candidates.find(
+      (j) => j.address && (j.address.includes(invoiceAddress) || invoiceAddress.includes(j.address))
+    );
+    if (byAddress) return byAddress;
+  }
+  return candidates[0];
+}
+
+function invoiceMatchesJobs(invoice, normalizedJobs) {
+  const email = (invoice.customer_email || '').toLowerCase().trim();
+  if (!email) return false;
+  return normalizedJobs.some((j) => j.email === email);
+}
+
+function publicInvoice(invoice, matchedJob) {
+  return {
+    id: invoice.id,
+    number: invoice.number,
+    status: invoice.status, // draft | open | paid | uncollectible | void
+    customerName: invoice.customer_name || '',
+    customerEmail: invoice.customer_email || '',
+    amountDueCents: invoice.amount_due,
+    amountPaidCents: invoice.amount_paid,
+    totalCents: invoice.total,
+    created: invoice.created ? new Date(invoice.created * 1000).toISOString() : null,
+    dueDate: invoice.due_date ? new Date(invoice.due_date * 1000).toISOString() : null,
+    hostedInvoiceUrl: invoice.hosted_invoice_url || null,
+    dashboardUrl: invoiceDashboardUrl(invoice.id),
+    type: guessInvoiceType(invoice.total, matchedJob ? matchedJob.totalCostCents : null),
+    jobName: matchedJob ? matchedJob.rawName : null,
+    jobAddress: matchedJob ? matchedJob.rawAddress : null,
+  };
+}
+
+async function buildNormalizedJobsForUser(user, admin) {
+  const jobs = await getUserAttachedJobs(fullNameOf(user), { isAdmin: admin });
+  return jobs.map((j) => ({
+    email: (j.email || '').toLowerCase().trim(),
+    address: normalizeAddressForMatch(j.address),
+    totalCostCents: j.totalCostCents,
+    rawName: j.name,
+    rawAddress: j.address,
+  }));
+}
+
+// Safety cap on pagination — this business does not remotely approach
+// this many invoices, so hitting this cap means something is wrong
+// (e.g. an infinite loop) rather than there being legitimately more to
+// fetch, and we'd rather stop than hang the request.
+const MAX_INVOICE_PAGES = 20;
+
+async function listAllStripeInvoices() {
+  const invoices = [];
+  let startingAfter;
+  for (let page = 0; page < MAX_INVOICE_PAGES; page += 1) {
+    const result = await stripe.invoices.list({ limit: 100, starting_after: startingAfter });
+    invoices.push(...result.data);
+    if (!result.has_more) break;
+    startingAfter = result.data[result.data.length - 1].id;
+  }
+  return invoices;
+}
+
+app.get('/api/invoices', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const normalizedJobs = await buildNormalizedJobsForUser(user, admin);
+    const invoices = await listAllStripeInvoices();
+
+    const results = [];
+    for (const invoice of invoices) {
+      if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs)) continue;
+      const matchedJob = findMatchedJob(invoice, normalizedJobs);
+      results.push(publicInvoice(invoice, matchedJob));
+    }
+
+    results.sort((a, b) => new Date(b.created) - new Date(a.created));
+
+    res.json({ invoices: results, isAdmin: admin });
+  } catch (err) {
+    console.error('invoices list error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Finalizes (if still a draft) and sends an invoice directly — the same
+// end result as clicking "Finalize and send" in the Stripe dashboard,
+// just without leaving the hub. Re-checks visibility server-side so a
+// non-admin can never send an invoice for a job they're not attached to,
+// even by guessing/crafting an invoice id.
+app.post('/api/invoices/:id/send', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const invoice = await stripe.invoices.retrieve(req.params.id);
+
+    if (!admin) {
+      const normalizedJobs = await buildNormalizedJobsForUser(user, false);
+      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+        return res.status(404).json({ error: 'Invoice not found.' });
+      }
+    }
+
+    if (!['draft', 'open'].includes(invoice.status)) {
+      return res.status(400).json({ error: `This invoice is already "${invoice.status}" — nothing to send.` });
+    }
+
+    const finalized = invoice.status === 'draft'
+      ? await stripe.invoices.finalizeInvoice(invoice.id)
+      : invoice;
+
+    const sent = await stripe.invoices.sendInvoice(finalized.id);
+
+    res.json({ invoice: publicInvoice(sent, null) });
+  } catch (err) {
+    console.error('invoice send error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
 // 7b. Hub admin panel — lets an admin (see isUserAdmin above) see every
 // hub account, create one on someone else's behalf, reset a forgotten PIN
 // without needing the old one, promote/demote admins, and remove an
