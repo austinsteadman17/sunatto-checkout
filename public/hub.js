@@ -1562,6 +1562,7 @@ function renderCombinedRow(entry) {
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
           ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
           <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
+          ${invoice.status === 'draft' ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
         </div>
       </td>
     </tr>
@@ -1598,6 +1599,7 @@ function renderCombinedTable(container, query) {
   container.querySelectorAll('.resend-btn').forEach((btn) => btn.addEventListener('click', () => resendLink(btn)));
   container.querySelectorAll('.void-btn').forEach((btn) => btn.addEventListener('click', () => voidLink(btn)));
   container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
+  container.querySelectorAll('.delete-invoice-btn').forEach((btn) => btn.addEventListener('click', () => deleteInvoiceDraft(btn)));
 }
 
 function renderInvoicesTable() {
@@ -1656,6 +1658,7 @@ function renderInvoicesTable() {
             ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
             ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
             <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
+            ${invoice.status === 'draft' ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
           </div>
         </td>
       </tr>
@@ -1682,6 +1685,49 @@ function renderInvoicesTable() {
   invoicesTableWrap.querySelectorAll('.send-invoice-btn').forEach((btn) => {
     btn.addEventListener('click', () => sendInvoiceFromHub(btn));
   });
+  invoicesTableWrap.querySelectorAll('.delete-invoice-btn').forEach((btn) => {
+    btn.addEventListener('click', () => deleteInvoiceDraft(btn));
+  });
+}
+
+// Permanently deletes a still-draft invoice — both from this view AND the
+// underlying Stripe object (the server refuses anything that isn't still
+// "draft", so this can never touch an invoice a customer may have already
+// seen). For cleaning up mistaken/duplicate drafts before they're ever sent.
+async function deleteInvoiceDraft(btn) {
+  const id = btn.getAttribute('data-id');
+  const invoice = allInvoices.find((i) => i.id === id);
+  if (!invoice) return;
+
+  const label = invoice.customerName || invoice.customerEmail || 'this invoice';
+  const confirmed = await showConfirmModal({
+    title: 'Delete this draft invoice?',
+    message: `Permanently delete the draft invoice for ${label} (${fmtMoney(invoice.totalCents)})? This deletes it in Stripe too — it was never sent, so nobody has seen it. This can't be undone.`,
+    confirmLabel: 'Delete draft',
+    danger: true,
+  });
+  if (!confirmed) return;
+
+  invoicesError.textContent = '';
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Deleting…';
+
+  try {
+    const res = await fetch(`/api/invoices/${id}`, {
+      method: 'DELETE',
+      headers: { 'X-Hub-Session': getSessionToken() },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not delete invoice.');
+    allInvoices = allInvoices.filter((i) => i.id !== id);
+    renderTable();
+    renderInvoicesTable();
+  } catch (err) {
+    invoicesError.textContent = err.message;
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 async function sendInvoiceFromHub(btn) {
