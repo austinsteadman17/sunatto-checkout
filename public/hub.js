@@ -529,7 +529,7 @@ async function loadAndRender() {
       .map((part) => part[0].toUpperCase())
       .join('');
     jobCountNote.textContent = data.isAdmin
-      ? `Showing all ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} on the Monday board (admin access).`
+      ? ''
       : data.jobCount
         ? `Showing links for the ${data.jobCount} job${data.jobCount === 1 ? '' : 's'} you're attached to on the Monday board.`
         : 'No jobs on the Monday board are attached to your name yet — once you’re added as Sales Rep, Office, or Manager on a job, its links will show up here.';
@@ -1309,7 +1309,8 @@ function renderInvoicesTable() {
     const typeBadge = invoice.type
       ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
       : '—';
-    const viewUrl = invoice.hostedInvoiceUrl || invoice.dashboardUrl;
+    const hostedUrl = invoice.hostedInvoiceUrl;
+    const editUrl = invoice.dashboardUrl;
     const canSend = invoice.status === 'draft' || invoice.status === 'open';
 
     return `
@@ -1325,7 +1326,8 @@ function renderInvoicesTable() {
         <td>${fmtDate(invoice.created)}</td>
         <td>
           <div class="row-actions">
-            <a class="secondary" style="text-decoration:none; display:inline-flex; align-items:center;" href="${escapeHtml(viewUrl)}" target="_blank" rel="noopener">View</a>
+            ${hostedUrl ? `<a class="secondary" style="text-decoration:none; display:inline-flex; align-items:center;" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener">View</a>` : ''}
+            ${editUrl ? `<a class="secondary" style="text-decoration:none; display:inline-flex; align-items:center;" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener">Edit in Stripe</a>` : ''}
             <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'}>${invoice.status === 'draft' ? 'Send' : invoice.status === 'open' ? 'Resend' : 'Sent'}</button>
           </div>
         </td>
