@@ -1057,18 +1057,25 @@ app.get('/api/links', async (req, res) => {
       getUserAttachedJobs(fullNameOf(user), { isAdmin: admin }),
     ]);
 
-    // Admins see every link, full stop — no fuzzy job-matching filter, so
-    // nothing is ever hidden even if a job was since renamed/removed from
-    // the Monday board.
+    // Voided links (see POST /api/links/:id/void below) are stale/incorrect
+    // records an admin has explicitly pulled out of view — e.g. a link
+    // that was generated before financing terms were finalized and never
+    // actually reflected a real request to the homeowner. Never shown to
+    // anyone, admin included, same as how void invoices are hidden above.
+    const activeLinks = links.filter((l) => !l.voided);
+
+    // Admins see every (non-voided) link, full stop — no fuzzy
+    // job-matching filter, so nothing is ever hidden even if a job was
+    // since renamed/removed from the Monday board.
     if (admin) {
-      return res.json({ links, jobCount: jobs.length, isAdmin: true });
+      return res.json({ links: activeLinks, jobCount: jobs.length, isAdmin: true });
     }
 
     const normalizedJobs = jobs.map((j) => ({
       name: normalizeForMatch(j.name),
       address: normalizeAddressForMatch(j.address),
     }));
-    const visibleLinks = links.filter((l) => linkMatchesJobs(l, normalizedJobs));
+    const visibleLinks = activeLinks.filter((l) => linkMatchesJobs(l, normalizedJobs));
     res.json({ links: visibleLinks, jobCount: jobs.length, isAdmin: false });
   } catch (err) {
     console.error('list links error:', err);
@@ -1136,6 +1143,34 @@ app.post('/api/links/:id/resend', async (req, res) => {
     console.error('resend link error:', err);
     res.status(err.message === 'POSTMARK_SERVER_TOKEN is not set on the server.' ? 500 : 502)
       .json({ error: err.message });
+  }
+});
+
+// Voids a stale/incorrect payment link record — e.g. one generated before
+// financing terms were finalized that never reflected a real request to
+// the homeowner. Admin-only: this hides the link from EVERY viewer of the
+// hub (see the `voided` filter in GET /api/links above), not just the
+// person who created it, so it's restricted the same way other
+// hub-wide/account-affecting actions are gated to the Admin panel.
+app.post('/api/links/:id/void', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  if (!isUserAdmin(user)) {
+    return res.status(403).json({ error: 'Only an admin can void a payment link.' });
+  }
+  try {
+    const links = await loadLinks();
+    const record = links.find((l) => l.id === req.params.id);
+    if (!record) {
+      return res.status(404).json({ error: 'Link not found.' });
+    }
+    record.voided = true;
+    record.voidedAt = new Date().toISOString();
+    await saveLinks(links);
+    res.json({ voided: true });
+  } catch (err) {
+    console.error('void link error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
