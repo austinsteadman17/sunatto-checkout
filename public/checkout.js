@@ -59,7 +59,7 @@ document.getElementById('footnote').textContent =
     ? 'Secure 20% deposit for your residential solar installation, due at signing. The remaining 80% balance will be invoiced separately after installation is complete. Processed securely via Stripe. Questions? Call (210) 504-7669.'
     : 'Secure final 80% balance payment for your completed residential solar installation. Processed securely via Stripe. Questions? Call (210) 504-7669.';
 
-let stripe, elements, paymentIntentId, currentPaymentMethodId, currentSurchargeCents;
+let stripe, elements, paymentIntentId, paymentIntentClientSecret, currentPaymentMethodId, currentSurchargeCents;
 
 const lockedBlock = document.getElementById('locked-amount-block');
 const manualBlock = document.getElementById('manual-amount-block');
@@ -156,6 +156,7 @@ async function init() {
   }
 
   paymentIntentId = intentData.paymentIntentId;
+  paymentIntentClientSecret = intentData.clientSecret;
 
   elements = stripe.elements({ clientSecret: intentData.clientSecret, paymentMethodCreation: 'manual' });
   const paymentElement = elements.create('payment');
@@ -235,33 +236,58 @@ document.getElementById('confirm-button').addEventListener('click', async () => 
   confirmButton.textContent = 'Processing…';
 
   try {
+    // Step 1: server just updates the PaymentIntent's amount/surcharge —
+    // it no longer confirms the payment itself. See server.js's
+    // /api/finalize comment for why: confirming server-side broke every
+    // ACH/bank-account payment with a "requires a mandate" error, since
+    // only the browser (via stripe.confirmPayment below) can supply the
+    // mandate data a bank debit legally requires.
     const finalizeRes = await fetch('/api/finalize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         paymentIntentId,
-        paymentMethodId: currentPaymentMethodId,
         baseAmountCents: AMOUNT_CENTS,
         surchargeCents: currentSurchargeCents,
       }),
     });
-    const result = await finalizeRes.json();
+    const finalizeResult = await finalizeRes.json();
 
-    if (result.error) {
-      errorEl2.textContent = result.error;
+    if (finalizeResult.error) {
+      errorEl2.textContent = finalizeResult.error;
       return;
     }
 
-    let finalStatus = result.status;
+    // Step 2: confirm in the browser, reusing the PaymentMethod we already
+    // created above. This is Stripe's documented pattern for "manual"
+    // payment method creation, and the only way ACH mandate data gets
+    // attached correctly. redirect: 'if_required' means most cards/bank
+    // accounts resolve right here without ever leaving the page; Stripe
+    // only redirects if the specific payment method truly requires it.
+    const { error, paymentIntent } = await stripe.confirmPayment({
+      clientSecret: paymentIntentClientSecret,
+      confirmParams: {
+        payment_method: currentPaymentMethodId,
+        return_url: window.location.href,
+      },
+      redirect: 'if_required',
+    });
 
-    if (finalStatus === 'requires_action') {
-      const { error, paymentIntent } = await stripe.handleNextAction({ clientSecret: result.clientSecret });
-      if (error) {
-        errorEl2.textContent = error.message;
-        return;
-      }
-      finalStatus = paymentIntent.status;
+    if (error) {
+      errorEl2.textContent = error.message;
+      return;
     }
+
+    const finalStatus = paymentIntent.status;
+
+    // Best-effort: let the server know the payment went through so it can
+    // sync Monday.com / the payment-links hub. Fire-and-forget — never
+    // blocks or affects the success screen below.
+    fetch('/api/payment-confirmed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentIntentId }),
+    }).catch(() => {});
 
     if (finalStatus === 'succeeded' || finalStatus === 'processing') {
       document.getElementById('breakdown-screen').style.display = 'none';
