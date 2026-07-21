@@ -160,16 +160,26 @@ app.post('/api/payment-method-info', async (req, res) => {
 
 // ---------------------------------------------------------------------
 // 3. After the customer has SEEN the surcharge breakdown and explicitly
-//    confirmed, update the PaymentIntent's amount/surcharge fields and
-//    confirm it. On success, best-effort sync the result back to
-//    Monday.com (see syncPaymentToMonday below) — this never blocks or
-//    fails the payment response to the customer.
+//    confirmed, update the PaymentIntent's amount/surcharge fields.
+//
+//    IMPORTANT: this endpoint used to also call stripe.paymentIntents.confirm()
+//    right here on the server — that worked fine for cards, but broke EVERY
+//    ACH/us_bank_account payment with "This PaymentIntent requires a mandate,
+//    but no existing mandate was found." Bank-account debits legally require
+//    a mandate (the customer's authorization to debit their account), and
+//    Stripe can only construct that mandate from the customer's actual
+//    browser session (IP address, user agent) at the moment of confirmation
+//    — something a server-side Node call can never supply. The fix is to
+//    only update the amount/surcharge here, and let the browser do the
+//    actual confirm via stripe.confirmPayment() (see checkout.js), which
+//    Stripe.js can correctly attach mandate data to. See /api/payment-confirmed
+//    below for what used to happen after a successful confirm.
 // ---------------------------------------------------------------------
 app.post('/api/finalize', async (req, res) => {
   try {
-    const { paymentIntentId, paymentMethodId, baseAmountCents, surchargeCents } = req.body;
-    if (!paymentIntentId || !paymentMethodId || baseAmountCents == null) {
-      return res.status(400).json({ error: 'paymentIntentId, paymentMethodId, and baseAmountCents are required' });
+    const { paymentIntentId, baseAmountCents, surchargeCents } = req.body;
+    if (!paymentIntentId || baseAmountCents == null) {
+      return res.status(400).json({ error: 'paymentIntentId and baseAmountCents are required' });
     }
 
     const totalCents = baseAmountCents + (surchargeCents || 0);
@@ -186,30 +196,44 @@ app.post('/api/finalize', async (req, res) => {
 
     await stripe.paymentIntents.update(paymentIntentId, updateParams, PREVIEW_VERSION);
 
-    const confirmed = await stripe.paymentIntents.confirm(
-      paymentIntentId,
-      { payment_method: paymentMethodId },
-      PREVIEW_VERSION
-    );
+    res.json({ ready: true });
+  } catch (err) {
+    console.error('finalize error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
 
-    res.json({
-      status: confirmed.status,
-      clientSecret: confirmed.client_secret, // frontend may need this if 3DS/next_action is required
-    });
+// 3b. Called by the browser AFTER stripe.confirmPayment() has resolved
+// (client-side — see checkout.js). Re-checks the PaymentIntent's real
+// status with Stripe and, if it succeeded or is processing, runs the same
+// best-effort Monday.com / payment-links-hub sync that used to run inline
+// inside /api/finalize above, before the confirm step moved to the browser.
+app.post('/api/payment-confirmed', async (req, res) => {
+  try {
+    const { paymentIntentId } = req.body;
+    if (!paymentIntentId) {
+      return res.status(400).json({ error: 'paymentIntentId is required' });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, PREVIEW_VERSION);
+
+    res.json({ status: paymentIntent.status });
 
     // Fire-and-forget: don't make the customer wait on Monday.com (or the
     // payment-links hub lookup below), and never let either hiccup affect
     // the payment result already sent above.
-    if (confirmed.status === 'succeeded' || confirmed.status === 'processing') {
-      syncPaymentToMonday(confirmed).catch((err) => {
+    if (paymentIntent.status === 'succeeded' || paymentIntent.status === 'processing') {
+      syncPaymentToMonday(paymentIntent).catch((err) => {
         console.error('Monday.com sync failed (payment itself was NOT affected):', err);
       });
-      findAndMarkLinkPaid(confirmed).catch((err) => {
+      findAndMarkLinkPaid(paymentIntent).catch((err) => {
         console.error('Payment-links hub: marking link paid failed (payment itself was NOT affected):', err);
       });
     }
   } catch (err) {
-    console.error('finalize error:', err);
+    console.error('payment-confirmed error:', err);
     if (!res.headersSent) {
       res.status(500).json({ error: err.message });
     }
