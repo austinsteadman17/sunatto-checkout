@@ -65,8 +65,8 @@ app.post('/api/create-intent', async (req, res) => {
     if (!amountCents || amountCents <= 0) {
       return res.status(400).json({ error: 'amountCents is required and must be > 0' });
     }
-    if (!['deposit', 'balance'].includes(type)) {
-      return res.status(400).json({ error: 'type must be "deposit" or "balance"' });
+    if (!['deposit', 'balance', 'custom'].includes(type)) {
+      return res.status(400).json({ error: 'type must be "deposit", "balance", or "custom"' });
     }
 
     // Reuse a customer by email if one exists, otherwise create one.
@@ -92,9 +92,11 @@ app.post('/api/create-intent', async (req, res) => {
         currency: 'usd',
         customer: customer.id,
         payment_method_types: ['card', 'us_bank_account'],
-        description: description || (type === 'deposit'
-          ? 'Southern Energy Solar Installation — 20% Deposit'
-          : 'Southern Energy Solar Installation — Final 80% Balance'),
+        description: description || (
+          type === 'deposit' ? 'Southern Energy Solar Installation — 20% Deposit'
+          : type === 'balance' ? 'Southern Energy Solar Installation — Final 80% Balance'
+          : 'Southern Energy Solar Installation — Custom Amount'
+        ),
         metadata: {
           sunatto_payment_type: type,
           base_amount_cents: String(amountCents),
@@ -483,6 +485,27 @@ async function notifyNicoleOnMonday(itemId, type) {
   );
 }
 
+// Custom-amount payments (e.g. a down payment ahead of financing the rest)
+// don't map cleanly to either the Deposit or Balance status column, so per
+// Austin's call we don't touch either column for these — we just leave a
+// Monday update noting the amount so the office knows to reconcile it
+// manually rather than risk marking the wrong milestone "Paid".
+async function notifyNicoleOnMondayCustom(itemId, amountCents) {
+  const dollars = (amountCents / 100).toFixed(2);
+  await mondayRequest(
+    `mutation ($itemId: ID!, $body: String!, $mentionsList: [MentionObjectInput!]) {
+      create_update(item_id: $itemId, body: $body, mentions_list: $mentionsList) {
+        id
+      }
+    }`,
+    {
+      itemId: String(itemId),
+      body: `A custom payment of $${dollars} has been collected online via the Southern Energy checkout page. This doesn't map to the Deposit or Balance status column, so no column was updated — @Nicole please reconcile this manually.`,
+      mentionsList: [{ id: NICOLE_MONDAY_USER_ID, type: 'User' }],
+    }
+  );
+}
+
 async function syncPaymentToMonday(paymentIntent) {
   const type = paymentIntent.metadata && paymentIntent.metadata.sunatto_payment_type;
   const customerName = paymentIntent.metadata && paymentIntent.metadata.customer_name;
@@ -496,6 +519,12 @@ async function syncPaymentToMonday(paymentIntent) {
   const item = await findMondayItem(customerName, jobAddress);
   if (!item) {
     return; // findMondayItem already logged why
+  }
+
+  if (type === 'custom') {
+    await notifyNicoleOnMondayCustom(item.id, paymentIntent.amount);
+    console.log(`Monday sync: posted a custom-payment update on item ${item.id} ("${item.name}") — no status column touched.`);
+    return;
   }
 
   await markMondayItemPaid(item.id, type);
@@ -527,14 +556,16 @@ function escapeHtml(str) {
 
 function buildHomeownerEmail({ customerName, jobAddress, type, amount, checkoutUrl }) {
   const firstName = (customerName || '').trim().split(/\s+/)[0] || 'there';
-  const label = type === 'deposit' ? '20% deposit' : 'remaining 80% balance';
-  const subject = type === 'deposit'
-    ? 'Your 20% Deposit — Southern Energy Distributors'
-    : 'Your Final Balance Payment — Southern Energy Distributors';
+  const label = type === 'deposit' ? '20% deposit' : type === 'balance' ? 'remaining 80% balance' : 'custom payment amount';
+  const subject =
+    type === 'deposit' ? 'Your 20% Deposit — Southern Energy Distributors'
+    : type === 'balance' ? 'Your Final Balance Payment — Southern Energy Distributors'
+    : 'Your Payment — Southern Energy Distributors';
 
-  const footnote = type === 'deposit'
-    ? 'This is your secure 20% deposit for your residential solar installation, due at signing. The remaining 80% balance will be invoiced separately after installation is complete.'
-    : 'This is your secure final 80% balance payment for your completed residential solar installation.';
+  const footnote =
+    type === 'deposit' ? 'This is your secure 20% deposit for your residential solar installation, due at signing. The remaining 80% balance will be invoiced separately after installation is complete.'
+    : type === 'balance' ? 'This is your secure final 80% balance payment for your completed residential solar installation.'
+    : 'This is your secure payment for your residential solar installation, as arranged with your Southern Energy Distributors representative.';
 
   const textBody =
 `Hi ${firstName},
@@ -627,8 +658,8 @@ app.post('/api/send-homeowner-email', async (req, res) => {
     if (!checkoutUrl) {
       return res.status(400).json({ error: 'checkoutUrl is required' });
     }
-    if (!['deposit', 'balance'].includes(type)) {
-      return res.status(400).json({ error: 'type must be "deposit" or "balance"' });
+    if (!['deposit', 'balance', 'custom'].includes(type)) {
+      return res.status(400).json({ error: 'type must be "deposit", "balance", or "custom"' });
     }
 
     const { subject, textBody, htmlBody } = buildHomeownerEmail({
@@ -1046,8 +1077,8 @@ app.post('/api/links', async (req, res) => {
   try {
     const { customerName, customerEmail, customerPhone, jobAddress, type, amount, checkoutUrl } = req.body;
 
-    if (!['deposit', 'balance'].includes(type)) {
-      return res.status(400).json({ error: 'type must be "deposit" or "balance"' });
+    if (!['deposit', 'balance', 'custom'].includes(type)) {
+      return res.status(400).json({ error: 'type must be "deposit", "balance", or "custom"' });
     }
     if (!checkoutUrl) {
       return res.status(400).json({ error: 'checkoutUrl is required' });
