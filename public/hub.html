@@ -416,6 +416,7 @@
   .badge.unpaid { background: var(--gray-100); color: var(--gray-600); }
   .badge.deposit { background: var(--gold-light); color: var(--gold-dark); }
   .badge.balance { background: var(--gray-100); color: var(--gray-700); }
+  .badge.custom { background: var(--blue-light); color: var(--blue); }
   .badge.draft { background: var(--gray-100); color: var(--gray-600); }
   .badge.open { background: var(--gold-light); color: var(--gold-dark); }
   .badge.processing { background: var(--blue-light); color: var(--blue); }
@@ -583,13 +584,14 @@
     background: transparent;
     border: none;
     border-radius: 8px;
-    padding: 9px;
-    font-size: 13px;
+    padding: 9px 4px;
+    font-size: 12px;
     font-weight: 700;
     font-family: inherit;
     color: var(--gray-600);
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    white-space: nowrap;
   }
   .type-toggle button.active {
     background: var(--black);
@@ -848,6 +850,7 @@
         <div class="type-toggle">
           <button type="button" id="gen-type-deposit-btn" class="active">20% Deposit</button>
           <button type="button" id="gen-type-balance-btn">80% Balance</button>
+          <button type="button" id="gen-type-custom-btn">Custom Amount</button>
         </div>
 
         <label class="field-label" for="gen-email">Email</label>
@@ -856,10 +859,20 @@
         <label class="field-label" for="gen-phone">Phone number</label>
         <input type="tel" id="gen-phone" class="field-input" placeholder="(210) 555-0123" />
 
-        <label class="field-label" for="gen-total-cost">Total project cost</label>
-        <div class="amount-input-group">
-          <span class="prefix">$</span>
-          <input type="text" inputmode="decimal" id="gen-total-cost" class="field-input" placeholder="0.00" />
+        <div id="gen-total-cost-block">
+          <label class="field-label" for="gen-total-cost">Total project cost</label>
+          <div class="amount-input-group">
+            <span class="prefix">$</span>
+            <input type="text" inputmode="decimal" id="gen-total-cost" class="field-input" placeholder="0.00" />
+          </div>
+        </div>
+
+        <div id="gen-custom-amount-block" style="display:none;">
+          <label class="field-label" for="gen-custom-amount">Amount to charge</label>
+          <div class="amount-input-group">
+            <span class="prefix">$</span>
+            <input type="text" inputmode="decimal" id="gen-custom-amount" class="field-input" placeholder="0.00" />
+          </div>
         </div>
 
         <div class="locked-amount">

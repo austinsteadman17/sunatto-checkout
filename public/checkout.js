@@ -7,7 +7,8 @@
 //   /checkout.html?type=balance&name=Evan+Shiels&email=x@y.com   (amount typed in manually)
 
 const params = new URLSearchParams(window.location.search);
-const TYPE = params.get('type') === 'balance' ? 'balance' : 'deposit';
+const RAW_TYPE = params.get('type');
+const TYPE = RAW_TYPE === 'balance' ? 'balance' : RAW_TYPE === 'custom' ? 'custom' : 'deposit';
 const CUSTOMER_NAME = params.get('name') || '';
 const CUSTOMER_EMAIL = params.get('email') || '';
 const CUSTOMER_PHONE = params.get('phone') || '';
@@ -50,14 +51,16 @@ function attachCommaFormatting(field) {
 }
 
 document.getElementById('page-eyebrow').textContent =
-  TYPE === 'deposit' ? '20% Deposit' : 'Final Balance (80%)';
+  TYPE === 'deposit' ? '20% Deposit' : TYPE === 'balance' ? 'Final Balance (80%)' : 'Custom Amount';
 document.getElementById('page-subtitle').textContent =
   `Southern Energy Distributors LLC${CUSTOMER_NAME ? ' — ' + CUSTOMER_NAME : ''}${JOB_ADDRESS ? ' · ' + JOB_ADDRESS : ''}`;
 
 document.getElementById('footnote').textContent =
   TYPE === 'deposit'
     ? 'Secure 20% deposit for your residential solar installation, due at signing. The remaining 80% balance will be invoiced separately after installation is complete. Processed securely via Stripe. Questions? Call (210) 504-7669.'
-    : 'Secure final 80% balance payment for your completed residential solar installation. Processed securely via Stripe. Questions? Call (210) 504-7669.';
+    : TYPE === 'balance'
+    ? 'Secure final 80% balance payment for your completed residential solar installation. Processed securely via Stripe. Questions? Call (210) 504-7669.'
+    : 'Secure payment for your residential solar installation, as arranged with your Southern Energy Distributors representative. Processed securely via Stripe. Questions? Call (210) 504-7669.';
 
 let stripe, elements, paymentIntentId, paymentIntentClientSecret, currentPaymentMethodId, currentSurchargeCents;
 
@@ -292,10 +295,11 @@ document.getElementById('confirm-button').addEventListener('click', async () => 
     if (finalStatus === 'succeeded' || finalStatus === 'processing') {
       document.getElementById('breakdown-screen').style.display = 'none';
       document.getElementById('success-screen').style.display = 'block';
+      const paymentLabel = TYPE === 'deposit' ? 'deposit payment' : TYPE === 'balance' ? 'balance payment' : 'payment';
       document.getElementById('success-detail').textContent =
         finalStatus === 'processing'
-          ? `Your ${TYPE === 'deposit' ? 'deposit' : 'balance'} payment (${fmt(AMOUNT_CENTS + currentSurchargeCents)}) is processing. ACH payments can take a few business days to clear.`
-          : `Your ${TYPE === 'deposit' ? 'deposit' : 'balance'} payment of ${fmt(AMOUNT_CENTS + currentSurchargeCents)} was received. Thank you!`;
+          ? `Your ${paymentLabel} (${fmt(AMOUNT_CENTS + currentSurchargeCents)}) is processing. ACH payments can take a few business days to clear.`
+          : `Your ${paymentLabel} of ${fmt(AMOUNT_CENTS + currentSurchargeCents)} was received. Thank you!`;
     } else {
       errorEl2.textContent = `Payment status: ${finalStatus}. Please contact Southern Energy Distributors if this seems wrong.`;
     }

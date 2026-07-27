@@ -64,9 +64,13 @@ const backToListButton = document.getElementById('back-to-list-button');
 const backToHubButton = document.getElementById('back-to-hub-button');
 const genTypeDepositBtn = document.getElementById('gen-type-deposit-btn');
 const genTypeBalanceBtn = document.getElementById('gen-type-balance-btn');
+const genTypeCustomBtn = document.getElementById('gen-type-custom-btn');
 const genEmailField = document.getElementById('gen-email');
 const genPhoneField = document.getElementById('gen-phone');
+const genTotalCostBlock = document.getElementById('gen-total-cost-block');
 const genTotalCostField = document.getElementById('gen-total-cost');
+const genCustomAmountBlock = document.getElementById('gen-custom-amount-block');
+const genCustomAmountField = document.getElementById('gen-custom-amount');
 const genAmountDueCaption = document.getElementById('gen-amount-due-caption');
 const genAmountDueValue = document.getElementById('gen-amount-due-value');
 const generateError = document.getElementById('generate-error');
@@ -897,6 +901,7 @@ function attachCommaFormatting(field) {
   });
 }
 attachCommaFormatting(genTotalCostField);
+attachCommaFormatting(genCustomAmountField);
 
 async function openGenerateView() {
   generateError.textContent = '';
@@ -958,6 +963,7 @@ function selectJob(job) {
   genEmailField.value = job.email || '';
   genPhoneField.value = job.phone || '';
   genTotalCostField.value = job.totalCostCents ? formatNumberWithCommas((job.totalCostCents / 100).toFixed(2)) : '';
+  genCustomAmountField.value = '';
   genLinkBlock.style.display = 'none';
 
   setGenType('deposit');
@@ -969,13 +975,28 @@ function setGenType(type) {
   genType = type;
   genTypeDepositBtn.classList.toggle('active', type === 'deposit');
   genTypeBalanceBtn.classList.toggle('active', type === 'balance');
-  genAmountDueCaption.textContent = type === 'deposit' ? 'Amount due (20%)' : 'Amount due (80%)';
+  genTypeCustomBtn.classList.toggle('active', type === 'custom');
+
+  const isCustom = type === 'custom';
+  genTotalCostBlock.style.display = isCustom ? 'none' : 'block';
+  genCustomAmountBlock.style.display = isCustom ? 'block' : 'none';
+
+  genAmountDueCaption.textContent =
+    type === 'deposit' ? 'Amount due (20%)' :
+    type === 'balance' ? 'Amount due (80%)' :
+    'Amount due (Custom)';
   recomputeGen();
 }
 genTypeDepositBtn.addEventListener('click', () => setGenType('deposit'));
 genTypeBalanceBtn.addEventListener('click', () => setGenType('balance'));
+genTypeCustomBtn.addEventListener('click', () => setGenType('custom'));
 
 function currentGenAmountCents() {
+  if (genType === 'custom') {
+    const custom = parseFloat((genCustomAmountField.value || '').replace(/,/g, ''));
+    if (!custom || custom <= 0) return 0;
+    return Math.round(custom * 100);
+  }
   const total = parseFloat((genTotalCostField.value || '').replace(/,/g, ''));
   if (!total || total <= 0) return 0;
   const rate = genType === 'deposit' ? 0.2 : 0.8;
@@ -999,6 +1020,7 @@ function recomputeGen() {
   }
 }
 genTotalCostField.addEventListener('input', recomputeGen);
+genCustomAmountField.addEventListener('input', recomputeGen);
 genEmailField.addEventListener('input', recomputeGen);
 
 function buildGenCheckoutUrl() {
@@ -1537,7 +1559,7 @@ function combinedSearchResults(query) {
 function renderCombinedRow(entry) {
   if (entry.source === 'link') {
     const link = entry.item;
-    const typeLabel = link.type === 'deposit' ? '20% Deposit' : '80% Balance';
+    const typeLabel = link.type === 'deposit' ? '20% Deposit' : link.type === 'balance' ? '80% Balance' : 'Custom Amount';
     const statusBadge = link.paid
       ? '<span class="badge paid">Paid</span>'
       : '<span class="badge unpaid">Unpaid</span>';
