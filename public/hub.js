@@ -351,12 +351,14 @@ let allInvoices = [];
 let invoicesLoaded = false;
 
 // Which filter tab the combined Invoices/Payment Links table is showing.
-// "active" (the default landing view) = anything that still needs
-// attention right now: unpaid payment links, draft invoices nobody's
-// sent yet, and invoices with a payment actively processing. "sent" =
-// invoices out the door and waiting on the customer, nothing to do but
-// wait. "paid" = done. See entryTabBucket() for the exact mapping.
-let currentInvoicesTab = 'active';
+// "unpaid" (the default landing view) = unpaid payment links + draft
+// invoices nobody's sent yet. "sent" = invoices out the door and waiting
+// on the customer to pay. "pending" = ONLY invoices whose Status is
+// actively processing (e.g. an ACH payment mid-clear) — kept as its own
+// tab rather than folded into "unpaid" since it's a materially different
+// situation (money is already moving) from "nobody's done anything yet."
+// "paid" = done. See entryTabBucket() for the exact mapping.
+let currentInvoicesTab = 'unpaid';
 
 let allVoidedInvoices = [];
 
@@ -1565,35 +1567,37 @@ function combinedSearchResults(query) {
   );
 }
 
-// --- Filter tabs (Unpaid & Pending / Sent / Paid) ---------------------
+// --- Filter tabs (Unpaid / Sent / Pending / Paid) ----------------------
 //
 // The combined list used to show every payment link and invoice at once
 // regardless of status, which got long fast. Every entry now falls into
-// exactly one of three buckets:
-//   "active" — needs attention right now: an unpaid payment link, a
-//              draft invoice nobody's sent yet, or an invoice with a
-//              payment actively processing (e.g. ACH mid-clear). This is
-//              the default landing tab.
-//   "sent"   — an invoice that's out the door and waiting on the
-//              customer to pay it. Nothing for staff to do but wait.
-//   "paid"   — a paid payment link or a paid invoice. Done.
+// exactly one of four buckets:
+//   "unpaid"  — nobody's done anything yet: an unpaid payment link, or a
+//               draft invoice nobody's sent yet. This is the default
+//               landing tab.
+//   "sent"    — an invoice that's out the door and waiting on the
+//               customer to pay it. Nothing for staff to do but wait.
+//   "pending" — ONLY invoices whose Status is actively processing (e.g.
+//               an ACH payment mid-clear) — money is already moving, so
+//               kept separate from "unpaid" rather than lumped in.
+//   "paid"    — a paid payment link or a paid invoice. Done.
 // (Void/uncollectible invoices don't appear here at all — void ones live
 // in the separate Voided tab already, and the rare uncollectible case
 // falls into "sent" as the closest "still not paid" bucket.)
 function entryTabBucket(entry) {
   if (entry.source === 'link') {
-    return entry.item.paid ? 'paid' : 'active';
+    return entry.item.paid ? 'paid' : 'unpaid';
   }
   const invoice = entry.item;
-  if (invoice.paymentProcessing) return 'active';
+  if (invoice.paymentProcessing) return 'pending';
   if (invoice.status === 'paid') return 'paid';
-  if (invoice.status === 'draft') return 'active';
+  if (invoice.status === 'draft') return 'unpaid';
   if (invoice.status === 'open') return 'sent';
   return 'sent'; // uncollectible or any other odd status
 }
 
 function computeInvoicesTabCounts() {
-  const counts = { active: 0, sent: 0, paid: 0 };
+  const counts = { unpaid: 0, sent: 0, pending: 0, paid: 0 };
   const all = [
     ...allLinks.map((l) => ({ source: 'link', item: l })),
     ...allInvoices.map((i) => ({ source: 'invoice', item: i })),
@@ -1713,7 +1717,7 @@ function renderCombinedRow(entry) {
   `;
 }
 
-const INVOICES_TAB_LABELS = { active: 'Unpaid & Pending', sent: 'Sent', paid: 'Paid' };
+const INVOICES_TAB_LABELS = { unpaid: 'Unpaid', sent: 'Sent', pending: 'Pending', paid: 'Paid' };
 
 function renderCombinedTable(container, query) {
   const results = combinedSearchResults(query).filter((entry) => entryTabBucket(entry) === currentInvoicesTab);
