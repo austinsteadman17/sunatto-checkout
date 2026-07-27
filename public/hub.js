@@ -118,6 +118,7 @@ const voidedNavButton = document.getElementById('voided-nav-button');
 const invoicesRefreshButton = document.getElementById('invoices-refresh-button');
 const invoicesCountNote = document.getElementById('invoices-count-note');
 const invoicesSummaryStrip = document.getElementById('invoices-summary-strip');
+const invoicesTabsEl = document.getElementById('invoices-tabs');
 const invoicesSearchInput = document.getElementById('invoices-search-input');
 const invoicesError = document.getElementById('invoices-error');
 const invoicesTableWrap = document.getElementById('invoices-table-wrap');
@@ -348,6 +349,14 @@ let resetPinTargetUserId = null;
 
 let allInvoices = [];
 let invoicesLoaded = false;
+
+// Which filter tab the combined Invoices/Payment Links table is showing.
+// "active" (the default landing view) = anything that still needs
+// attention right now: unpaid payment links, draft invoices nobody's
+// sent yet, and invoices with a payment actively processing. "sent" =
+// invoices out the door and waiting on the customer, nothing to do but
+// wait. "paid" = done. See entryTabBucket() for the exact mapping.
+let currentInvoicesTab = 'active';
 
 let allVoidedInvoices = [];
 
@@ -1556,6 +1565,67 @@ function combinedSearchResults(query) {
   );
 }
 
+// --- Filter tabs (Unpaid & Pending / Sent / Paid) ---------------------
+//
+// The combined list used to show every payment link and invoice at once
+// regardless of status, which got long fast. Every entry now falls into
+// exactly one of three buckets:
+//   "active" — needs attention right now: an unpaid payment link, a
+//              draft invoice nobody's sent yet, or an invoice with a
+//              payment actively processing (e.g. ACH mid-clear). This is
+//              the default landing tab.
+//   "sent"   — an invoice that's out the door and waiting on the
+//              customer to pay it. Nothing for staff to do but wait.
+//   "paid"   — a paid payment link or a paid invoice. Done.
+// (Void/uncollectible invoices don't appear here at all — void ones live
+// in the separate Voided tab already, and the rare uncollectible case
+// falls into "sent" as the closest "still not paid" bucket.)
+function entryTabBucket(entry) {
+  if (entry.source === 'link') {
+    return entry.item.paid ? 'paid' : 'active';
+  }
+  const invoice = entry.item;
+  if (invoice.paymentProcessing) return 'active';
+  if (invoice.status === 'paid') return 'paid';
+  if (invoice.status === 'draft') return 'active';
+  if (invoice.status === 'open') return 'sent';
+  return 'sent'; // uncollectible or any other odd status
+}
+
+function computeInvoicesTabCounts() {
+  const counts = { active: 0, sent: 0, paid: 0 };
+  const all = [
+    ...allLinks.map((l) => ({ source: 'link', item: l })),
+    ...allInvoices.map((i) => ({ source: 'invoice', item: i })),
+  ];
+  all.forEach((entry) => { counts[entryTabBucket(entry)]++; });
+  return counts;
+}
+
+function renderInvoicesTabs() {
+  if (!invoicesTabsEl) return;
+  const counts = computeInvoicesTabCounts();
+  invoicesTabsEl.querySelectorAll('.view-tab').forEach((btn) => {
+    const tab = btn.getAttribute('data-tab');
+    btn.classList.toggle('active', tab === currentInvoicesTab);
+    let countEl = btn.querySelector('.tab-count');
+    if (!countEl) {
+      countEl = document.createElement('span');
+      countEl.className = 'tab-count';
+      btn.appendChild(countEl);
+    }
+    countEl.textContent = counts[tab] || 0;
+  });
+}
+
+invoicesTabsEl && invoicesTabsEl.querySelectorAll('.view-tab').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    currentInvoicesTab = btn.getAttribute('data-tab');
+    renderInvoicesTabs();
+    renderCombinedTable(invoicesTableWrap, invoicesSearchInput.value.trim());
+  });
+});
+
 function renderCombinedRow(entry) {
   if (entry.source === 'link') {
     const link = entry.item;
@@ -1643,13 +1713,16 @@ function renderCombinedRow(entry) {
   `;
 }
 
+const INVOICES_TAB_LABELS = { active: 'Unpaid & Pending', sent: 'Sent', paid: 'Paid' };
+
 function renderCombinedTable(container, query) {
-  const results = combinedSearchResults(query);
+  const results = combinedSearchResults(query).filter((entry) => entryTabBucket(entry) === currentInvoicesTab);
+  const tabLabel = INVOICES_TAB_LABELS[currentInvoicesTab] || '';
 
   if (results.length === 0) {
     container.innerHTML = query
-      ? `<div class="empty-state">No payment links or invoices match "${escapeHtml(query)}".</div>`
-      : `<div class="empty-state">No payment links or invoices yet.</div>`;
+      ? `<div class="empty-state">No payment links or invoices in "${escapeHtml(tabLabel)}" match "${escapeHtml(query)}".</div>`
+      : `<div class="empty-state">Nothing in "${escapeHtml(tabLabel)}" right now.</div>`;
     return;
   }
 
@@ -1687,6 +1760,7 @@ function renderInvoicesTable() {
   const query = invoicesSearchInput.value.trim();
   renderInvoicesSummary(allInvoices, allLinks);
   updateInvoicesCountNote();
+  renderInvoicesTabs();
   renderCombinedTable(invoicesTableWrap, query);
 }
 

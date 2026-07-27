@@ -352,6 +352,43 @@
 
   .toolbar { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
   .toolbar input.field-input { flex: 1; }
+
+  /* Filter tabs above the combined Invoices/Payment Links table — lets
+     the default view stay short (just what needs attention) while the
+     rest is one click away instead of everything piling into one long
+     list. See entryTabBucket() in hub.js for what falls into each tab. */
+  .view-tabs {
+    display: flex;
+    gap: var(--sp-5);
+    border-bottom: 1.5px solid var(--gray-150);
+    margin-bottom: var(--sp-4);
+  }
+  .view-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1.5px;
+    padding: 0 2px var(--sp-2) 2px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--gray-500);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .view-tab:hover { color: var(--gray-700); }
+  .view-tab.active { color: var(--gray-800); border-bottom-color: var(--gold-dark); }
+  .view-tab .tab-count {
+    display: inline-block;
+    margin-left: 6px;
+    background: var(--gray-100);
+    color: var(--gray-600);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .view-tab.active .tab-count { background: var(--gold-light); color: var(--gold-dark); }
   button.secondary {
     background: var(--white);
     border: 1.5px solid var(--gray-200);
@@ -1045,6 +1082,12 @@
       <div class="subtitle" id="invoices-count-note"></div>
 
       <div class="summary-strip two-row" id="invoices-summary-strip"></div>
+
+      <div class="view-tabs" id="invoices-tabs">
+        <button type="button" class="view-tab active" data-tab="active">Unpaid &amp; Pending</button>
+        <button type="button" class="view-tab" data-tab="sent">Sent</button>
+        <button type="button" class="view-tab" data-tab="paid">Paid</button>
+      </div>
 
       <div class="toolbar">
         <input type="text" id="invoices-search-input" class="field-input" placeholder="Search payment links & invoices by name or address…" />
