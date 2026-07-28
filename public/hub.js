@@ -217,6 +217,57 @@ function showVoidReasonModal({ title = 'Void this invoice?', message = '' } = {}
   });
 }
 
+// --- Mark-paid modal (asks how it was collected + a note) --------------
+// For payments collected OUTSIDE Stripe — check, cash, another payment
+// processor — since the hub has no way to detect those on its own.
+// Resolves with { method, note } (trimmed), or null if cancelled.
+const markPaidModalOverlay = document.getElementById('mark-paid-modal-overlay');
+const markPaidModalTitle = document.getElementById('mark-paid-modal-title');
+const markPaidModalMessage = document.getElementById('mark-paid-modal-message');
+const markPaidMethodSelect = document.getElementById('mark-paid-method-select');
+const markPaidNoteTextarea = document.getElementById('mark-paid-note-textarea');
+const markPaidModalError = document.getElementById('mark-paid-modal-error');
+const markPaidModalOkButton = document.getElementById('mark-paid-modal-ok');
+const markPaidModalCancelButton = document.getElementById('mark-paid-modal-cancel');
+
+function showMarkPaidModal({ title = 'Mark this invoice paid?', message = '' } = {}) {
+  return new Promise((resolve) => {
+    markPaidModalTitle.textContent = title;
+    markPaidModalMessage.textContent = message;
+    markPaidMethodSelect.value = 'check';
+    markPaidNoteTextarea.value = '';
+    markPaidModalError.textContent = '';
+    markPaidModalOverlay.style.display = 'flex';
+    setTimeout(() => markPaidNoteTextarea.focus(), 0);
+
+    function cleanup(result) {
+      markPaidModalOverlay.style.display = 'none';
+      markPaidModalOkButton.removeEventListener('click', onOk);
+      markPaidModalCancelButton.removeEventListener('click', onCancel);
+      markPaidModalOverlay.removeEventListener('click', onOverlayClick);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onOk() {
+      const note = markPaidNoteTextarea.value.trim();
+      if (!note) {
+        markPaidModalError.textContent = 'Enter a note on how this was collected.';
+        markPaidNoteTextarea.focus();
+        return;
+      }
+      cleanup({ method: markPaidMethodSelect.value, note });
+    }
+    function onCancel() { cleanup(null); }
+    function onOverlayClick(e) { if (e.target === markPaidModalOverlay) cleanup(null); }
+    function onKeydown(e) { if (e.key === 'Escape') cleanup(null); }
+
+    markPaidModalOkButton.addEventListener('click', onOk);
+    markPaidModalCancelButton.addEventListener('click', onCancel);
+    markPaidModalOverlay.addEventListener('click', onOverlayClick);
+    document.addEventListener('keydown', onKeydown);
+  });
+}
+
 // --- PIN box enhancement --------------------------------------------
 // Purely visual: turns each real `<input type="password" maxlength="N">`
 // PIN field into a row of single-digit boxes, without changing how the
@@ -1690,6 +1741,14 @@ function renderCombinedRow(entry) {
   // processing, since that payment could still land against it.
   const showDelete = invoice.status === 'draft';
   const showVoid = invoice.status === 'open' && !invoice.paymentProcessing;
+  // Mark Paid covers both: a draft that's already been paid another way
+  // before ever being sent, or a sent invoice paid outside Stripe (check,
+  // cash, another processor). Never while a real Stripe payment is
+  // already processing — that should be left to land on its own.
+  const showMarkPaid = (invoice.status === 'draft' || invoice.status === 'open') && !invoice.paymentProcessing;
+  const manualPaidNote = invoice.manualPaidMethodLabel
+    ? `<div class="cust-sub">Paid via ${escapeHtml(invoice.manualPaidMethodLabel)}${invoice.manualPaidNote ? ' — ' + escapeHtml(invoice.manualPaidNote) : ''}</div>`
+    : '';
 
   return `
     <tr data-id="${invoice.id}" data-source="invoice">
@@ -1697,6 +1756,7 @@ function renderCombinedRow(entry) {
         <div class="cust-name">${escapeHtml(invoice.customerName || invoice.customerEmail || '(no name)')}</div>
         <div class="cust-sub">${escapeHtml(invoice.jobAddress || '')}</div>
         <div class="cust-sub">${escapeHtml(invoice.customerEmail || '')}${invoice.number ? ' · ' + escapeHtml(invoice.number) : ''}</div>
+        ${manualPaidNote}
       </td>
       <td><span class="source-tag">Invoice</span></td>
       <td>${typeBadge}</td>
@@ -1709,6 +1769,7 @@ function renderCombinedRow(entry) {
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
           ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
           <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
+          ${showMarkPaid ? `<button type="button" class="secondary mark-paid-invoice-btn" data-id="${invoice.id}" data-name="${escapeHtml(invoice.customerName || 'this invoice')}" title="Manually mark this invoice paid — check, cash, or another payment processor">Mark Paid</button>` : ''}
           ${showDelete ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
           ${showVoid ? `<button type="button" class="secondary void-invoice-btn" data-id="${invoice.id}" title="Void this invoice in Stripe and the hub (e.g. customer is paying another way)">Void</button>` : ''}
         </div>
@@ -1754,6 +1815,7 @@ function renderCombinedTable(container, query) {
   container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
   container.querySelectorAll('.delete-invoice-btn').forEach((btn) => btn.addEventListener('click', () => deleteInvoiceDraft(btn)));
   container.querySelectorAll('.void-invoice-btn').forEach((btn) => btn.addEventListener('click', () => voidInvoiceSent(btn)));
+  container.querySelectorAll('.mark-paid-invoice-btn').forEach((btn) => btn.addEventListener('click', () => markInvoicePaid(btn)));
 }
 
 // The merged main page: payment links and invoices always shown together
@@ -1839,6 +1901,45 @@ async function voidInvoiceSent(btn) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not void invoice.');
     allInvoices = allInvoices.filter((i) => i.id !== id);
+    renderInvoicesTable();
+  } catch (err) {
+    invoicesError.textContent = err.message;
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+// Manually marks an invoice paid for money collected OUTSIDE Stripe —
+// check, cash, or another payment processor. Uses Stripe's own
+// paid_out_of_band mechanism server-side (see server.js), so it lands in
+// the Paid tab exactly like a real Stripe-collected payment, with the
+// method/note kept alongside it for the record.
+async function markInvoicePaid(btn) {
+  const id = btn.getAttribute('data-id');
+  const invoice = allInvoices.find((i) => i.id === id);
+  if (!invoice) return;
+
+  const label = invoice.customerName || invoice.customerEmail || 'this customer';
+  const result = await showMarkPaidModal({
+    title: 'Mark this invoice paid?',
+    message: `Mark the invoice for ${label} (${fmtMoney(invoice.totalCents)}) as paid? Use this when it was collected outside Stripe — check, cash, or another payment processor. This updates Stripe and moves it to the Paid tab.`,
+  });
+  if (result === null) return; // cancelled
+
+  invoicesError.textContent = '';
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Marking paid…';
+
+  try {
+    const res = await fetch(`/api/invoices/${id}/mark-paid`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify(result),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not mark this invoice paid.');
+    allInvoices = allInvoices.map((i) => (i.id === id ? data.invoice : i));
     renderInvoicesTable();
   } catch (err) {
     invoicesError.textContent = err.message;

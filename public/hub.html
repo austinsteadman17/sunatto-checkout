@@ -116,7 +116,9 @@
   }
   label.field-label:first-of-type { margin-top: 0; }
 
-  input.field-input {
+  input.field-input,
+  select.field-input,
+  textarea.field-input {
     width: 100%;
     background: var(--gray-50);
     border: 1.5px solid var(--gray-150);
@@ -128,8 +130,11 @@
     font-family: inherit;
     transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
   }
-  input.field-input::placeholder { color: var(--gray-400); }
-  input.field-input:focus {
+  input.field-input::placeholder,
+  textarea.field-input::placeholder { color: var(--gray-400); }
+  input.field-input:focus,
+  select.field-input:focus,
+  textarea.field-input:focus {
     outline: none;
     background: var(--white);
     border-color: var(--gold);
@@ -1129,6 +1134,29 @@
       <div class="modal-actions">
         <button type="button" class="secondary" id="void-reason-modal-cancel">Cancel</button>
         <button type="button" class="icon-btn primary-action danger-action" id="void-reason-modal-ok">Void Invoice</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="mark-paid-modal-overlay" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle></svg>
+      </div>
+      <div class="modal-title" id="mark-paid-modal-title"></div>
+      <p class="modal-message" id="mark-paid-modal-message"></p>
+      <label class="field-label" for="mark-paid-method-select">How was this collected?</label>
+      <select id="mark-paid-method-select" class="field-input">
+        <option value="check">Check</option>
+        <option value="cash">Cash</option>
+        <option value="other_processor">Other payment processor</option>
+      </select>
+      <label class="field-label" for="mark-paid-note-textarea">Note</label>
+      <textarea id="mark-paid-note-textarea" class="field-input" rows="3" placeholder="e.g. Check #1042 received 7/28, deposited at branch"></textarea>
+      <div class="error-message" id="mark-paid-modal-error"></div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="mark-paid-modal-cancel">Cancel</button>
+        <button type="button" class="icon-btn primary-action" id="mark-paid-modal-ok">Mark as Paid</button>
       </div>
     </div>
   </div>
