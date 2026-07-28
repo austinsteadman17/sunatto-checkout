@@ -1475,15 +1475,26 @@ app.get('/api/invoices', async (req, res) => {
   if (!user) return;
   try {
     const admin = isUserAdmin(user);
-    const normalizedJobs = await buildNormalizedJobsForUser(user, admin);
-    const invoices = await listAllStripeInvoices();
+    const [normalizedJobs, invoices, manualPaidMeta] = await Promise.all([
+      buildNormalizedJobsForUser(user, admin),
+      listAllStripeInvoices(),
+      loadManualPaidMeta(),
+    ]);
 
     const results = [];
     for (const invoice of invoices) {
       if (invoice.status === 'void') continue; // voided invoices are clutter, never shown
       if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs)) continue;
       const matchedJob = findMatchedJob(invoice, normalizedJobs);
-      results.push(publicInvoice(invoice, matchedJob));
+      const meta = manualPaidMeta[invoice.id] || null;
+      results.push({
+        ...publicInvoice(invoice, matchedJob),
+        manualPaidMethod: meta ? meta.method : null,
+        manualPaidMethodLabel: meta ? (MANUAL_PAID_METHOD_LABELS[meta.method] || meta.method) : null,
+        manualPaidNote: meta ? meta.note : null,
+        manualPaidByName: meta ? meta.markedByName : null,
+        manualPaidAt: meta ? meta.markedAt : null,
+      });
     }
 
     results.sort((a, b) => new Date(b.created) - new Date(a.created));
@@ -1663,6 +1674,100 @@ app.post('/api/invoices/:id/void', async (req, res) => {
     res.json({ invoice: publicInvoice(voided, null) });
   } catch (err) {
     console.error('invoice void error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manually marks an invoice paid for money collected OUTSIDE Stripe —
+// check, cash, or another payment processor. Note this deliberately does
+// NOT delete the invoice from Stripe. Austin's original idea was to
+// delete it once collected another way, but Stripe's API refuses to
+// delete anything that's ever been finalized/sent (same rule as the
+// draft-only DELETE endpoint above) — and even if it allowed it, deleting
+// a paid invoice would destroy the payment record, which is the opposite
+// of what bookkeeping needs here. Stripe has a purpose-built mechanism
+// for exactly this situation instead: paid_out_of_band. It marks the
+// invoice "paid" in Stripe itself (so it correctly lands in this hub's
+// Paid tab, right alongside real Stripe-collected payments) without ever
+// attempting to charge the customer. Stripe has no field for "how"/"why"
+// though, so the method + note staff enter here are kept in our own
+// meta store (mirroring the void-reason pattern above) and merged back
+// into GET /api/invoices so the Paid tab can show exactly how each one
+// was actually collected.
+const MANUAL_PAID_META_STORE_NAME = 'sunatto-manual-paid-invoice-meta';
+const MANUAL_PAID_META_BLOB_KEY = 'manual-paid-meta.json';
+
+async function loadManualPaidMeta() {
+  const store = blobStore(MANUAL_PAID_META_STORE_NAME);
+  const data = await store.get(MANUAL_PAID_META_BLOB_KEY, { type: 'json' });
+  return (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+}
+
+async function saveManualPaidMeta(meta) {
+  const store = blobStore(MANUAL_PAID_META_STORE_NAME);
+  await store.setJSON(MANUAL_PAID_META_BLOB_KEY, meta);
+}
+
+const MANUAL_PAID_METHOD_LABELS = {
+  check: 'Check',
+  cash: 'Cash',
+  other_processor: 'Other payment processor',
+};
+
+app.post('/api/invoices/:id/mark-paid', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const invoice = await stripe.invoices.retrieve(req.params.id, { expand: ['payment_intent'] });
+
+    if (!admin) {
+      const normalizedJobs = await buildNormalizedJobsForUser(user, false);
+      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+        return res.status(404).json({ error: 'Invoice not found.' });
+      }
+    }
+
+    if (!['draft', 'open'].includes(invoice.status)) {
+      return res.status(400).json({ error: `This invoice is already "${invoice.status}" — nothing to mark paid.` });
+    }
+    // A real Stripe payment is already mid-flight (e.g. ACH clearing) —
+    // don't let a manual override race with it landing.
+    if (invoicePaymentIsProcessing(invoice)) {
+      return res.status(400).json({ error: 'A Stripe payment is already submitted and processing on this invoice — wait for it to clear (or fail) before marking it paid another way.' });
+    }
+
+    const { method, note } = req.body || {};
+    if (!MANUAL_PAID_METHOD_LABELS[method]) {
+      return res.status(400).json({ error: 'method must be "check", "cash", or "other_processor".' });
+    }
+    if (!note || !note.trim()) {
+      return res.status(400).json({ error: 'A note on how this payment was collected is required.' });
+    }
+
+    // Stripe requires an invoice to be finalized (out of "draft") before
+    // it can be paid. Finalizing alone does NOT email the customer —
+    // that only happens via the separate sendInvoice() call the /send
+    // endpoint above uses — so this is safe even for a draft nobody's
+    // seen yet.
+    const finalized = invoice.status === 'draft'
+      ? await stripe.invoices.finalizeInvoice(invoice.id)
+      : invoice;
+
+    const paid = await stripe.invoices.pay(finalized.id, { paid_out_of_band: true });
+
+    const meta = await loadManualPaidMeta();
+    meta[invoice.id] = {
+      method,
+      note: note.trim(),
+      markedByName: fullNameOf(user),
+      markedAt: new Date().toISOString(),
+    };
+    await saveManualPaidMeta(meta);
+
+    res.json({ invoice: publicInvoice(paid, null) });
+  } catch (err) {
+    console.error('invoice mark-paid error:', err);
     res.status(500).json({ error: err.message });
   }
 });
