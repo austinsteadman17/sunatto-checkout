@@ -1097,6 +1097,12 @@ app.post('/api/links', async (req, res) => {
       createdAt: now,
       lastSentAt: now,
       sentCount: 1,
+      // True only once an email has actually gone out to the customer
+      // (see POST /api/links/:id/mark-emailed below) — NOT just because a
+      // link was generated, opened, or copied. That distinction is what
+      // separates the hub's "Unpaid" tab (nobody's been sent anything
+      // yet) from "Sent" (out the door, awaiting payment).
+      emailSent: false,
       paid: false,
       paidAt: null,
       paymentIntentId: null,
@@ -1109,6 +1115,30 @@ app.post('/api/links', async (req, res) => {
     res.json({ id: record.id });
   } catch (err) {
     console.error('create link error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Flips a payment link's emailSent flag once an email has genuinely gone
+// out to the customer — called right after a successful Postmark send
+// from either intake.html or the hub's Generate Payment Link flow (never
+// from just opening/copying a link). Same trust level as POST /api/links
+// above (no login required): both intake.html and the logged-in hub call
+// this, and the only effect is a tracking flag, not anything financial.
+app.post('/api/links/:id/mark-emailed', async (req, res) => {
+  try {
+    const links = await loadLinks();
+    const record = links.find((l) => l.id === req.params.id);
+    if (!record) {
+      return res.status(404).json({ error: 'Link not found.' });
+    }
+    record.emailSent = true;
+    record.lastSentAt = new Date().toISOString();
+    record.sentCount = (record.sentCount || 0) + 1;
+    await saveLinks(links);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('mark-emailed error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1213,6 +1243,7 @@ app.post('/api/links/:id/resend', async (req, res) => {
     });
     const messageId = await sendViaPostmark({ to: record.customerEmail, subject, htmlBody, textBody });
 
+    record.emailSent = true;
     record.lastSentAt = new Date().toISOString();
     record.sentCount = (record.sentCount || 0) + 1;
     await saveLinks(links);
