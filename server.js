@@ -1820,8 +1820,11 @@ app.post('/api/invoices/:id/mark-paid', async (req, res) => {
 //   column on any item. If it's flipped to "Create", this checks whether
 //   the deposit/balance was already collected another way (the standing
 //   Payment Link, or a hub-generated link), and if not, drafts the Stripe
-//   invoice itself and sets the column to "Ready to Send" — never further.
-//   A human still has to actually send it from Stripe.
+//   invoice, finalizes it, and sends it to the homeowner immediately — no
+//   human review step. Monday's status is then set straight to "Sent" (see
+//   finalizeAndSendInvoice below). This replaces what used to be a human
+//   hand-off ("Ready to Send") — removed per Austin's call once the
+//   automation was tested end-to-end.
 //
 //   Part B — POST /api/webhooks/stripe: Stripe calls this the instant an
 //   invoice is finalized/paid/voided, so Monday's status column reflects
@@ -2014,10 +2017,11 @@ async function findExistingSunattoInvoice(customerId, kind, addressNormalized) {
 // Builds the actual draft — two invoice items (full project cost, then the
 // negative offset line netting it down to the 20%/80% due now), then an
 // invoice referencing the matching dashboard template (for memo/footer)
-// with the real Installation Address, a 7-day due date, and NO tax. Left
-// as collection_method 'send_invoice' + auto_advance false, which keeps it
-// a draft until a human finalizes/sends it from Stripe — this code never
-// does that itself.
+// with the real Installation Address, a due date 24 hours out, and NO tax.
+// Still created as collection_method 'send_invoice' + auto_advance false
+// (so it exists as a normal draft first) — processMondayInvoiceWebhook
+// below is what actually finalizes and sends it, immediately after this
+// returns, via finalizeAndSendInvoice.
 async function createSunattoDraftInvoice(customer, monday, kind) {
   const totalCents = monday.totalCostCents;
   const pctCents = kind === 'deposit' ? Math.round(totalCents * 0.2) : Math.round(totalCents * 0.8);
@@ -2037,10 +2041,15 @@ async function createSunattoDraftInvoice(customer, monday, kind) {
     currency: 'usd',
   });
 
+  // due_date (a Unix timestamp), not days_until_due (whole days only) — we
+  // need a 24-hour window, not a 1-day one. This invoice is finalized and
+  // sent within seconds of being created (see processMondayInvoiceWebhook),
+  // so "24 hours from now" and "24 hours after it's sent" are effectively
+  // the same moment.
   return stripe.invoices.create({
     customer: customer.id,
     collection_method: 'send_invoice',
-    days_until_due: 7,
+    due_date: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
     auto_advance: false,
     pending_invoice_items_behavior: 'include',
     rendering: { template: templateId },
@@ -2050,6 +2059,19 @@ async function createSunattoDraftInvoice(customer, monday, kind) {
       sunatto_invoice_kind: kind,
     },
   });
+}
+
+// Finalizes and sends a draft invoice immediately, then reflects "Sent" on
+// Monday directly — this is what replaces the old "Ready to Send" human
+// hand-off. If either Stripe call throws (no email on file, Stripe being
+// Stripe, etc.), it propagates up to processMondayInvoiceWebhook's own
+// try/catch, which leaves Monday's status untouched — so the item just
+// sits at "Create" and the very next status touch retries the whole
+// thing, same as any other failure in this flow.
+async function finalizeAndSendInvoice(invoice, itemId, columnId) {
+  await stripe.invoices.finalizeInvoice(invoice.id);
+  await stripe.invoices.sendInvoice(invoice.id);
+  await setMondayStatusColumn(itemId, columnId, 'Sent');
 }
 
 // The full Part A flow for one Monday item + column. Wrapped in try/catch
@@ -2122,8 +2144,8 @@ async function processMondayInvoiceWebhook(itemId, kind) {
           console.warn(`Monday invoice webhook: item ${itemId} (${kind}) matched ${existing.length} invoices — using ${invoice.id}, flagging the rest for manual cleanup: ${existing.slice(1).map((i) => i.id).join(', ')}`);
         }
         if (invoice.status === 'draft') {
-          await setMondayStatusColumn(itemId, columnId, 'Ready to Send');
-          console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resuming existing draft ${invoice.id}, marked Ready to Send.`);
+          await finalizeAndSendInvoice(invoice, itemId, columnId);
+          console.log(`Monday invoice webhook: item ${itemId} (${kind}) — finalized and sent existing draft ${invoice.id}, marked Sent.`);
         } else if (invoice.status === 'open') {
           await setMondayStatusColumn(itemId, columnId, 'Sent');
           console.log(`Monday invoice webhook: item ${itemId} (${kind}) — found already-finalized invoice ${invoice.id} while Monday said Create — marked Sent.`);
@@ -2146,8 +2168,8 @@ async function processMondayInvoiceWebhook(itemId, kind) {
     }
 
     const invoice = await createSunattoDraftInvoice(customer, monday, kind);
-    await setMondayStatusColumn(itemId, columnId, 'Ready to Send');
-    console.log(`Monday invoice webhook: item ${itemId} (${kind}) — created draft invoice ${invoice.id}, marked Ready to Send.`);
+    await finalizeAndSendInvoice(invoice, itemId, columnId);
+    console.log(`Monday invoice webhook: item ${itemId} (${kind}) — created, finalized, and sent invoice ${invoice.id}, marked Sent.`);
   } catch (err) {
     console.error(`Monday invoice webhook: error processing item ${itemId} (${kind}):`, err);
   }
