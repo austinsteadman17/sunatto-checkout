@@ -1824,7 +1824,10 @@ app.post('/api/invoices/:id/mark-paid', async (req, res) => {
 //   human review step. Monday's status is then set straight to "Sent" (see
 //   finalizeAndSendInvoice below). This replaces what used to be a human
 //   hand-off ("Ready to Send") — removed per Austin's call once the
-//   automation was tested end-to-end.
+//   automation was tested end-to-end. Flipping the status to "Resend"
+//   instead (a manual trigger for chasing unpaid invoices) finds the
+//   invoice already sent for this job, resets its due date to right now,
+//   and re-sends the same invoice email — see handleResendInvoice below.
 //
 //   Part B — POST /api/webhooks/stripe: Stripe calls this the instant an
 //   invoice is finalized/paid/voided, so Monday's status column reflects
@@ -2074,6 +2077,77 @@ async function finalizeAndSendInvoice(invoice, itemId, columnId) {
   await setMondayStatusColumn(itemId, columnId, 'Sent');
 }
 
+// Triggered by flipping the "20% Invoice"/"80% Invoice" status to "Resend"
+// (a manual trigger Austin added for chasing down invoices that have gone
+// unpaid) — finds the invoice already sent for this job, resets its due
+// date to right now, and re-sends the same invoice email. The due date is
+// deliberately reset to "now" rather than kept at its original 24-hour
+// due date: if someone's resending an invoice, it's almost certainly
+// because it's overdue, and Austin wants the homeowner to read the resend
+// as "pay this immediately," not get a fresh grace period.
+async function handleResendInvoice(itemId, columnId, kind, monday) {
+  const label = kind === 'deposit' ? '20% deposit' : '80% balance';
+  const addressNormalized = normalizeAddressForMatch(monday.address);
+
+  const customers = await stripe.customers.list({ email: monday.email, limit: 10 });
+  const customer = customers.data[0] || null;
+  if (!customer) {
+    await postMondayComment(
+      itemId,
+      `Couldn't resend the ${label} invoice — no Stripe customer found for this job yet, so nothing has been sent. Flip the status to "Create" instead if one still needs to be generated.`
+    );
+    console.warn(`Monday invoice webhook: item ${itemId} (${kind}) resend requested but no Stripe customer found.`);
+    return;
+  }
+
+  const matches = await findExistingSunattoInvoice(customer.id, kind, addressNormalized);
+  if (matches.length === 0) {
+    await postMondayComment(
+      itemId,
+      `Couldn't resend the ${label} invoice — no existing invoice found for this job. Flip the status to "Create" instead if one still needs to be generated.`
+    );
+    console.warn(`Monday invoice webhook: item ${itemId} (${kind}) resend requested but no matching invoice found.`);
+    return;
+  }
+
+  const invoice = matches[0];
+  if (matches.length > 1) {
+    console.warn(`Monday invoice webhook: item ${itemId} (${kind}) resend matched ${matches.length} invoices — using ${invoice.id}.`);
+  }
+
+  if (invoice.status === 'paid') {
+    await setMondayStatusColumn(itemId, columnId, 'Paid');
+    await notifyNicoleInvoicePaid(itemId, kind);
+    console.log(`Monday invoice webhook: item ${itemId} (${kind}) resend requested but invoice ${invoice.id} is already paid — marked Paid instead.`);
+    return;
+  }
+  if (invoice.status === 'void') {
+    await postMondayComment(
+      itemId,
+      `Couldn't resend the ${label} invoice — it was voided in Stripe. Flip the status to "Create" to generate a new one instead.`
+    );
+    console.warn(`Monday invoice webhook: item ${itemId} (${kind}) resend requested but invoice ${invoice.id} is void.`);
+    return;
+  }
+
+  // Stripe requires due_date to be in the future, if only by a moment —
+  // this still reads to the homeowner as "due today."
+  const dueNow = Math.floor(Date.now() / 1000) + 60;
+  await stripe.invoices.update(invoice.id, { due_date: dueNow });
+
+  if (invoice.status === 'draft') {
+    // Shouldn't normally happen (invoices are auto-sent on creation), but
+    // if one's still sitting as a draft for some reason, finalize it now
+    // rather than fail the resend.
+    await finalizeAndSendInvoice(invoice, itemId, columnId);
+  } else {
+    await stripe.invoices.sendInvoice(invoice.id);
+    await setMondayStatusColumn(itemId, columnId, 'Sent');
+  }
+
+  console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resent invoice ${invoice.id}, due date reset to now, marked Sent.`);
+}
+
 // The full Part A flow for one Monday item + column. Wrapped in try/catch
 // and called fire-and-forget from the webhook handler below (Monday
 // expects a fast ack, and there's no human watching this run in real
@@ -2090,6 +2164,12 @@ async function processMondayInvoiceWebhook(itemId, kind) {
     }
 
     const currentStatus = kind === 'deposit' ? monday.depositStatus : monday.balanceStatus;
+
+    if (currentStatus === 'Resend') {
+      await handleResendInvoice(itemId, columnId, kind, monday);
+      return;
+    }
+
     if (currentStatus !== 'Create') {
       console.log(`Monday invoice webhook: item ${itemId} ${kind} status is "${currentStatus}", not "Create" — nothing to do.`);
       return;
