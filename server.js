@@ -2209,17 +2209,22 @@ app.post('/api/webhooks/monday-invoice-status', async (req, res) => {
   const itemId = event && (event.pulseId || event.itemId);
   const columnId = event && event.columnId;
 
-  // Ack immediately: Monday expects a fast response, and the actual work
-  // below involves several outbound Monday + Stripe API calls.
+  // IMPORTANT: this must stay awaited before responding. Netlify Functions
+  // run as serverless invocations that can freeze/terminate the moment a
+  // response is sent — code left running "in the background" after
+  // res.json() is not reliably guaranteed to finish. Monday's webhook
+  // retry policy (once a minute for 30 minutes on failure) tolerates a
+  // slower response fine, so we just do the work synchronously here.
+  if (itemId && columnId) {
+    let kind = null;
+    if (columnId === MONDAY_DEPOSIT_STATUS_COLUMN_ID) kind = 'deposit';
+    else if (columnId === MONDAY_BALANCE_STATUS_COLUMN_ID) kind = 'balance';
+    if (kind) {
+      await processMondayInvoiceWebhook(itemId, kind);
+    }
+  }
+
   res.status(200).json({ ok: true });
-
-  if (!itemId || !columnId) return;
-  let kind = null;
-  if (columnId === MONDAY_DEPOSIT_STATUS_COLUMN_ID) kind = 'deposit';
-  else if (columnId === MONDAY_BALANCE_STATUS_COLUMN_ID) kind = 'balance';
-  if (!kind) return; // some other column on the board changed, not ours
-
-  await processMondayInvoiceWebhook(itemId, kind);
 });
 
 // --- Part B endpoint: Stripe calls this as invoices are finalized/paid/voided ---
@@ -2233,12 +2238,16 @@ app.post('/api/webhooks/stripe', async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Ack immediately, same reasoning as the Monday webhook above.
-  res.status(200).json({ received: true });
-
+  // IMPORTANT: awaited before responding, same reasoning as the Monday
+  // webhook above — Netlify Functions can freeze right after a response is
+  // sent, so "ack now, keep working after" isn't reliable here. Stripe's
+  // own retry policy tolerates a slower response fine.
   try {
     const invoice = stripeEvent.data.object;
-    if (!invoice || invoice.object !== 'invoice') return;
+    if (!invoice || invoice.object !== 'invoice') {
+      res.status(200).json({ received: true });
+      return;
+    }
 
     let itemId = invoice.metadata && invoice.metadata.monday_item_id;
     let kind = invoice.metadata && invoice.metadata.sunatto_invoice_kind;
@@ -2247,6 +2256,7 @@ app.post('/api/webhooks/stripe', async (req, res) => {
       const legacyMatch = await findMondayItemForLegacyInvoice(invoice);
       if (!legacyMatch) {
         console.log(`Stripe webhook: could not match invoice ${invoice.id} to a Monday item (event ${stripeEvent.type}).`);
+        res.status(200).json({ received: true });
         return;
       }
       itemId = legacyMatch.itemId;
@@ -2278,8 +2288,10 @@ app.post('/api/webhooks/stripe', async (req, res) => {
       default:
         break;
     }
+    res.status(200).json({ received: true });
   } catch (err) {
     console.error('Stripe webhook processing error:', err);
+    res.status(200).json({ received: true }); // ack anyway so Stripe doesn't retry-storm on our own bug
   }
 });
 
