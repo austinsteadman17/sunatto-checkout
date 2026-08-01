@@ -1826,8 +1826,9 @@ app.post('/api/invoices/:id/mark-paid', async (req, res) => {
 //   hand-off ("Ready to Send") — removed per Austin's call once the
 //   automation was tested end-to-end. Flipping the status to "Resend"
 //   instead (a manual trigger for chasing unpaid invoices) finds the
-//   invoice already sent for this job, resets its due date to right now,
-//   and re-sends the same invoice email — see handleResendInvoice below.
+//   invoice already sent for this job and re-sends that same invoice
+//   email again — no due date change, no new invoice — see
+//   handleResendInvoice below.
 //
 //   Part B — POST /api/webhooks/stripe: Stripe calls this the instant an
 //   invoice is finalized/paid/voided, so Monday's status column reflects
@@ -2045,10 +2046,7 @@ async function createSunattoDraftInvoice(customer, monday, kind) {
   });
 
   // due_date (a Unix timestamp), not days_until_due (whole days only) — we
-  // need a 24-hour window, not a 1-day one. This invoice is finalized and
-  // sent within seconds of being created (see processMondayInvoiceWebhook),
-  // so "24 hours from now" and "24 hours after it's sent" are effectively
-  // the same moment.
+  // need a 24-hour window, not a 1-day one.
   return stripe.invoices.create({
     customer: customer.id,
     collection_method: 'send_invoice',
@@ -2079,12 +2077,10 @@ async function finalizeAndSendInvoice(invoice, itemId, columnId) {
 
 // Triggered by flipping the "20% Invoice"/"80% Invoice" status to "Resend"
 // (a manual trigger Austin added for chasing down invoices that have gone
-// unpaid) — finds the invoice already sent for this job, resets its due
-// date to right now, and re-sends the same invoice email. The due date is
-// deliberately reset to "now" rather than kept at its original 24-hour
-// due date: if someone's resending an invoice, it's almost certainly
-// because it's overdue, and Austin wants the homeowner to read the resend
-// as "pay this immediately," not get a fresh grace period.
+// unpaid) — finds the invoice already sent for this job and re-sends that
+// exact same invoice email again. Deliberately does NOT touch the due date
+// or create a second invoice — Austin's call: keep this simple and avoid
+// ever generating duplicate invoices for the same job.
 async function handleResendInvoice(itemId, columnId, kind, monday) {
   const label = kind === 'deposit' ? '20% deposit' : '80% balance';
   const addressNormalized = normalizeAddressForMatch(monday.address);
@@ -2130,22 +2126,20 @@ async function handleResendInvoice(itemId, columnId, kind, monday) {
     return;
   }
 
-  // Stripe requires due_date to be in the future, if only by a moment —
-  // this still reads to the homeowner as "due today."
-  const dueNow = Math.floor(Date.now() / 1000) + 60;
-  await stripe.invoices.update(invoice.id, { due_date: dueNow });
-
   if (invoice.status === 'draft') {
     // Shouldn't normally happen (invoices are auto-sent on creation), but
     // if one's still sitting as a draft for some reason, finalize it now
     // rather than fail the resend.
     await finalizeAndSendInvoice(invoice, itemId, columnId);
-  } else {
-    await stripe.invoices.sendInvoice(invoice.id);
-    await setMondayStatusColumn(itemId, columnId, 'Sent');
+    console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resend finalized and sent existing draft ${invoice.id}.`);
+    return;
   }
 
-  console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resent invoice ${invoice.id}, due date reset to now, marked Sent.`);
+  // invoice.status === 'open' (the normal case) — just re-send the exact
+  // same invoice email again, no changes to the invoice itself.
+  await stripe.invoices.sendInvoice(invoice.id);
+  await setMondayStatusColumn(itemId, columnId, 'Sent');
+  console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resent invoice ${invoice.id}, marked Sent.`);
 }
 
 // The full Part A flow for one Monday item + column. Wrapped in try/catch
