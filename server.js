@@ -26,7 +26,13 @@ const Stripe = require('stripe');
 const { getStore } = require('@netlify/blobs');
 
 const app = express();
-app.use(express.json());
+// The `verify` callback stashes the exact raw request bytes on req.rawBody
+// alongside normal JSON parsing, needed for POST /api/webhooks/stripe below
+// to verify Stripe's signature (Stripe signs the raw body, not the
+// re-serialized JSON object, so req.body alone isn't enough).
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.static(path.join(__dirname, 'public')));
 
 if (!process.env.STRIPE_SECRET_KEY) {
@@ -1800,6 +1806,480 @@ app.post('/api/invoices/:id/mark-paid', async (req, res) => {
   } catch (err) {
     console.error('invoice mark-paid error:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 7a3. Webhook-driven invoice automation — replaces the old
+// sunatto-20pct-invoice-drafts / sunatto-80pct-invoice-drafts scheduled
+// tasks (which polled the whole board daily via browser automation) with
+// two real webhooks:
+//
+//   Part A — POST /api/webhooks/monday-invoice-status: Monday calls this
+//   the instant someone flips the "20% Invoice" or "80% Invoice" status
+//   column on any item. If it's flipped to "Create", this checks whether
+//   the deposit/balance was already collected another way (the standing
+//   Payment Link, or a hub-generated link), and if not, drafts the Stripe
+//   invoice itself and sets the column to "Ready to Send" — never further.
+//   A human still has to actually send it from Stripe.
+//
+//   Part B — POST /api/webhooks/stripe: Stripe calls this the instant an
+//   invoice is finalized/paid/voided, so Monday's status column reflects
+//   reality in real time instead of waiting for a nightly poll. Invoices
+//   created by Part A carry monday_item_id/sunatto_invoice_kind metadata
+//   for an exact match; invoices from before this system (or created by
+//   hand in the dashboard) fall back to the same email+address fuzzy
+//   matching the old scheduled tasks used.
+//
+// Part C (the daily "still sitting in Ready to Send" nudge to Nicole and
+// Mariel) was intentionally NOT ported here — Austin asked to drop it for
+// this round. The old scheduled tasks handled it; nothing currently does.
+// ---------------------------------------------------------------------
+const STANDING_DEPOSIT_PAYMENT_LINK_ID = 'plink_1TtXiBAKmB8qDjmomznIsrsK';
+// Stripe invoice_rendering_template objects — referencing these directly
+// pulls in the exact memo/footer text already configured in Settings >
+// Billing > Invoices > Templates, instead of re-typing it in code where it
+// could drift out of sync with what the dashboard shows.
+const DEPOSIT_INVOICE_TEMPLATE_ID = 'inrtem_1Ttb6tAKmB8qDjmob1l4W5rl'; // "Solar Cash Deposit (20%) Invoice"
+const BALANCE_INVOICE_TEMPLATE_ID = 'inrtem_1Ttb7PAKmB8qDjmoiTY0Y8Wg'; // "Solar Cash Balance (80%) Invoice"
+
+// The negative-line description is how both this code and the legacy
+// fuzzy-matching (for pre-existing invoices with no metadata) tell a
+// deposit invoice apart from a balance invoice.
+const INVOICE_OFFSET_LINE_SIGNATURES = {
+  deposit: 'Less: Balance Due Upon Installation Completion (80%)',
+  balance: 'Less: Deposit Paid at Signing (20%)',
+};
+
+async function setMondayStatusColumn(itemId, columnId, label) {
+  await mondayRequest(
+    `mutation ($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
+      change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) {
+        id
+      }
+    }`,
+    { boardId: MONDAY_BOARD_ID, itemId: String(itemId), columnId, value: JSON.stringify({ label }) }
+  );
+}
+
+async function postMondayComment(itemId, body) {
+  await mondayRequest(
+    `mutation ($itemId: ID!, $body: String!) {
+      create_update(item_id: $itemId, body: $body) { id }
+    }`,
+    { itemId: String(itemId), body }
+  );
+}
+
+async function notifyNicoleInvoicePaid(itemId, kind) {
+  const label = kind === 'deposit' ? '20% deposit' : 'final 80% balance';
+  await mondayRequest(
+    `mutation ($itemId: ID!, $body: String!, $mentionsList: [MentionObjectInput!]) {
+      create_update(item_id: $itemId, body: $body, mentions_list: $mentionsList) {
+        id
+      }
+    }`,
+    {
+      itemId: String(itemId),
+      body: `The ${label} invoice for this job has been paid. @Nicole please update your boards accordingly.`,
+      mentionsList: [{ id: NICOLE_MONDAY_USER_ID, type: 'User' }],
+    }
+  );
+}
+
+// Fetches one Monday item's Address/Email/Phone/Total Cost plus both
+// status columns' current text in a single request — the webhook only
+// ever needs one item at a time, unlike getUserAttachedJobs's full-board
+// scan above.
+async function fetchMondayItemById(itemId) {
+  const data = await mondayRequest(
+    `query ($itemIds: [ID!]) {
+      items(ids: $itemIds) {
+        id
+        name
+        column_values(ids: ["${MONDAY_ADDRESS_COLUMN_ID}", "${MONDAY_EMAIL_COLUMN_ID}", "${MONDAY_PHONE_COLUMN_ID}", "${MONDAY_TOTAL_COST_COLUMN_ID}", "${MONDAY_DEPOSIT_STATUS_COLUMN_ID}", "${MONDAY_BALANCE_STATUS_COLUMN_ID}"]) {
+          id
+          text
+        }
+      }
+    }`,
+    { itemIds: [String(itemId)] }
+  );
+  const item = data.items && data.items[0];
+  if (!item) return null;
+  const values = {};
+  for (const cv of item.column_values) values[cv.id] = cv.text;
+  const totalCost = parseFloat(values[MONDAY_TOTAL_COST_COLUMN_ID] || '');
+  return {
+    id: item.id,
+    name: item.name,
+    address: values[MONDAY_ADDRESS_COLUMN_ID] || '',
+    email: values[MONDAY_EMAIL_COLUMN_ID] || '',
+    phone: values[MONDAY_PHONE_COLUMN_ID] || '',
+    totalCostCents: Number.isFinite(totalCost) ? Math.round(totalCost * 100) : null,
+    depositStatus: values[MONDAY_DEPOSIT_STATUS_COLUMN_ID] || '',
+    balanceStatus: values[MONDAY_BALANCE_STATUS_COLUMN_ID] || '',
+  };
+}
+
+// Mirrors Step A2.5 of the old 20%-deposit task: a sales rep can send the
+// standing, reusable Payment Link straight to a homeowner and collect the
+// deposit with no invoice involved at all. Matches by email + ~20%-of-
+// Total-Cost amount (within $1, to absorb rounding). Returns 'paid',
+// 'pending' (ACH still clearing — recheck later), or null (no match, so
+// proceed to the hub-link check next).
+async function checkStandingDepositLink(email, totalCostCents) {
+  const targetEmail = (email || '').toLowerCase().trim();
+  if (!targetEmail || !totalCostCents) return null;
+  const targetAmount = Math.round(totalCostCents * 0.2);
+
+  let startingAfter;
+  for (let page = 0; page < 10; page += 1) {
+    const sessions = await stripe.checkout.sessions.list({
+      payment_link: STANDING_DEPOSIT_PAYMENT_LINK_ID,
+      limit: 100,
+      starting_after: startingAfter,
+      expand: ['data.payment_intent', 'data.customer_details'],
+    });
+    for (const session of sessions.data) {
+      const sessionEmail = ((session.customer_details && session.customer_details.email) || '').toLowerCase().trim();
+      if (sessionEmail !== targetEmail) continue;
+      if (Math.abs((session.amount_total || 0) - targetAmount) > 100) continue;
+      const pi = session.payment_intent;
+      const piStatus = pi && typeof pi === 'object' ? pi.status : null;
+      if (piStatus === 'succeeded') return 'paid';
+      if (piStatus === 'processing') return 'pending';
+    }
+    if (!sessions.has_more) break;
+    startingAfter = sessions.data[sessions.data.length - 1].id;
+  }
+  return null;
+}
+
+// Mirrors the hub-link check both old tasks did (Step A2.6 for deposit,
+// A2.5 for balance): a rep may have already generated a one-off checkout
+// link for this exact job through intake.html/hub.html. Matches on email
+// first, address as a fallback/tiebreaker — same fuzzy logic used
+// elsewhere in this file. Returns 'paid', 'sent' (unpaid but a real email
+// went out — see the emailSent field), or null (no matching link, or one
+// exists but was never actually emailed, so an invoice is still useful).
+async function checkHubLink(kind, email, addressNormalized) {
+  const targetEmail = (email || '').toLowerCase().trim();
+  const links = await loadLinks();
+  const candidates = links.filter((l) => {
+    if (l.type !== kind) return false;
+    const linkEmail = (l.customerEmail || '').toLowerCase().trim();
+    if (targetEmail && linkEmail === targetEmail) return true;
+    const linkAddress = normalizeAddressForMatch(l.jobAddress);
+    return !!(linkAddress && addressNormalized
+      && (linkAddress.includes(addressNormalized) || addressNormalized.includes(linkAddress)));
+  });
+  if (candidates.length === 0) return null;
+  if (candidates.some((l) => l.paid)) return 'paid';
+  if (candidates.some((l) => l.emailSent)) return 'sent';
+  return null;
+}
+
+// Duplicate check across ALL of a customer's invoices (draft, open, paid —
+// everything except void, which is dead). Prefers an exact match via the
+// metadata this system stamps on invoices it creates; falls back to the
+// same line-item-signature + Installation Address matching the old
+// scheduled tasks did by eye, for invoices created before this system
+// existed (or made by hand in the dashboard).
+async function findExistingSunattoInvoice(customerId, kind, addressNormalized) {
+  const signature = INVOICE_OFFSET_LINE_SIGNATURES[kind];
+  const invoices = await stripe.invoices.list({ customer: customerId, limit: 100 });
+  const matches = [];
+  for (const invoice of invoices.data) {
+    if (invoice.status === 'void') continue;
+    if (invoice.metadata && invoice.metadata.monday_item_id && invoice.metadata.sunatto_invoice_kind === kind) {
+      matches.push(invoice);
+      continue;
+    }
+    const lines = (invoice.lines && invoice.lines.data) || [];
+    const hasSignatureLine = lines.some((l) => (l.description || '').includes(signature));
+    if (!hasSignatureLine) continue;
+    const addressField = (invoice.custom_fields || []).find((f) =>
+      (f.name || '').toLowerCase().includes('installation address')
+    );
+    const invoiceAddress = addressField ? normalizeAddressForMatch(addressField.value) : '';
+    if (invoiceAddress && addressNormalized
+      && (invoiceAddress.includes(addressNormalized) || addressNormalized.includes(invoiceAddress))) {
+      matches.push(invoice);
+    }
+  }
+  return matches;
+}
+
+// Builds the actual draft — two invoice items (full project cost, then the
+// negative offset line netting it down to the 20%/80% due now), then an
+// invoice referencing the matching dashboard template (for memo/footer)
+// with the real Installation Address, a 7-day due date, and NO tax. Left
+// as collection_method 'send_invoice' + auto_advance false, which keeps it
+// a draft until a human finalizes/sends it from Stripe — this code never
+// does that itself.
+async function createSunattoDraftInvoice(customer, monday, kind) {
+  const totalCents = monday.totalCostCents;
+  const pctCents = kind === 'deposit' ? Math.round(totalCents * 0.2) : Math.round(totalCents * 0.8);
+  const offsetCents = totalCents - pctCents;
+  const templateId = kind === 'deposit' ? DEPOSIT_INVOICE_TEMPLATE_ID : BALANCE_INVOICE_TEMPLATE_ID;
+
+  await stripe.invoiceItems.create({
+    customer: customer.id,
+    description: 'Residential Solar Installation',
+    amount: totalCents,
+    currency: 'usd',
+  });
+  await stripe.invoiceItems.create({
+    customer: customer.id,
+    description: INVOICE_OFFSET_LINE_SIGNATURES[kind],
+    amount: -offsetCents,
+    currency: 'usd',
+  });
+
+  return stripe.invoices.create({
+    customer: customer.id,
+    collection_method: 'send_invoice',
+    days_until_due: 7,
+    auto_advance: false,
+    pending_invoice_items_behavior: 'include',
+    rendering: { template: templateId },
+    custom_fields: [{ name: 'Installation Address', value: monday.address }],
+    metadata: {
+      monday_item_id: String(monday.id),
+      sunatto_invoice_kind: kind,
+    },
+  });
+}
+
+// The full Part A flow for one Monday item + column. Wrapped in try/catch
+// and called fire-and-forget from the webhook handler below (Monday
+// expects a fast ack, and there's no human watching this run in real
+// time) — any failure is logged, and the item is simply left at "Create"
+// so the very next column touch (even Austin re-saving the same value)
+// retries it.
+async function processMondayInvoiceWebhook(itemId, kind) {
+  const columnId = kind === 'deposit' ? MONDAY_DEPOSIT_STATUS_COLUMN_ID : MONDAY_BALANCE_STATUS_COLUMN_ID;
+  try {
+    const monday = await fetchMondayItemById(itemId);
+    if (!monday) {
+      console.warn(`Monday invoice webhook: item ${itemId} not found.`);
+      return;
+    }
+
+    const currentStatus = kind === 'deposit' ? monday.depositStatus : monday.balanceStatus;
+    if (currentStatus !== 'Create') {
+      console.log(`Monday invoice webhook: item ${itemId} ${kind} status is "${currentStatus}", not "Create" — nothing to do.`);
+      return;
+    }
+
+    if (!monday.address || !monday.phone || !monday.totalCostCents) {
+      console.warn(`Monday invoice webhook: item ${itemId} (${kind}) missing Address/Phone/Total Cost — leaving as Create.`);
+      await postMondayComment(
+        itemId,
+        `This job's ${kind === 'deposit' ? '20% deposit' : '80% balance'} invoice couldn't be auto-created — missing Address, Customer Phone, or Total Cost. Fill these in, then flip the status back to "Create" to retry.`
+      );
+      return;
+    }
+
+    const addressNormalized = normalizeAddressForMatch(monday.address);
+
+    if (kind === 'deposit') {
+      const standingResult = await checkStandingDepositLink(monday.email, monday.totalCostCents);
+      if (standingResult === 'paid') {
+        await setMondayStatusColumn(itemId, columnId, 'Paid');
+        await notifyNicoleInvoicePaid(itemId, kind);
+        console.log(`Monday invoice webhook: item ${itemId} deposit already paid via standing Payment Link — marked Paid.`);
+        return;
+      }
+      if (standingResult === 'pending') {
+        console.log(`Monday invoice webhook: item ${itemId} deposit pending via standing Payment Link — leaving as Create to recheck on the next status touch.`);
+        return;
+      }
+    }
+
+    const hubResult = await checkHubLink(kind, monday.email, addressNormalized);
+    if (hubResult === 'paid') {
+      await setMondayStatusColumn(itemId, columnId, 'Paid');
+      await notifyNicoleInvoicePaid(itemId, kind);
+      console.log(`Monday invoice webhook: item ${itemId} ${kind} already paid via hub link — marked Paid.`);
+      return;
+    }
+    if (hubResult === 'sent') {
+      await setMondayStatusColumn(itemId, columnId, 'Sent');
+      console.log(`Monday invoice webhook: item ${itemId} ${kind} link already sent via hub — marked Sent, no invoice created.`);
+      return;
+    }
+
+    const customers = await stripe.customers.list({ email: monday.email, limit: 10 });
+    let customer = customers.data[0] || null;
+
+    if (customer) {
+      const existing = await findExistingSunattoInvoice(customer.id, kind, addressNormalized);
+      if (existing.length > 0) {
+        const invoice = existing[0];
+        if (existing.length > 1) {
+          console.warn(`Monday invoice webhook: item ${itemId} (${kind}) matched ${existing.length} invoices — using ${invoice.id}, flagging the rest for manual cleanup: ${existing.slice(1).map((i) => i.id).join(', ')}`);
+        }
+        if (invoice.status === 'draft') {
+          await setMondayStatusColumn(itemId, columnId, 'Ready to Send');
+          console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resuming existing draft ${invoice.id}, marked Ready to Send.`);
+        } else if (invoice.status === 'open') {
+          await setMondayStatusColumn(itemId, columnId, 'Sent');
+          console.log(`Monday invoice webhook: item ${itemId} (${kind}) — found already-finalized invoice ${invoice.id} while Monday said Create — marked Sent.`);
+        } else if (invoice.status === 'paid') {
+          await setMondayStatusColumn(itemId, columnId, 'Paid');
+          await notifyNicoleInvoicePaid(itemId, kind);
+          console.log(`Monday invoice webhook: item ${itemId} (${kind}) — found already-paid invoice ${invoice.id} while Monday said Create — marked Paid.`);
+        } else {
+          console.warn(`Monday invoice webhook: item ${itemId} (${kind}) — found invoice ${invoice.id} in unexpected status "${invoice.status}" — leaving as Create for manual review.`);
+        }
+        return;
+      }
+    } else {
+      customer = await stripe.customers.create({
+        name: monday.name,
+        email: monday.email,
+        phone: monday.phone,
+        address: { country: 'US', line1: monday.address },
+      });
+    }
+
+    const invoice = await createSunattoDraftInvoice(customer, monday, kind);
+    await setMondayStatusColumn(itemId, columnId, 'Ready to Send');
+    console.log(`Monday invoice webhook: item ${itemId} (${kind}) — created draft invoice ${invoice.id}, marked Ready to Send.`);
+  } catch (err) {
+    console.error(`Monday invoice webhook: error processing item ${itemId} (${kind}):`, err);
+  }
+}
+
+// Fallback matcher for Part B (the Stripe webhook below) when an invoice
+// has no monday_item_id/sunatto_invoice_kind metadata — i.e. it predates
+// this system, or was created by hand in the dashboard. Same email-first,
+// address-tiebreaker approach GET /api/invoices already uses, plus
+// guessInvoiceType's total-vs-Total-Cost ratio to decide deposit vs
+// balance.
+async function findMondayItemForLegacyInvoice(invoice) {
+  const email = (invoice.customer_email || '').toLowerCase().trim();
+  if (!email) return null;
+
+  const allJobs = await getUserAttachedJobs('', { isAdmin: true });
+  const candidates = allJobs.filter((j) => (j.email || '').toLowerCase().trim() === email);
+  if (candidates.length === 0) return null;
+
+  let job = candidates[0];
+  if (candidates.length > 1) {
+    const addressField = (invoice.custom_fields || []).find((f) =>
+      (f.name || '').toLowerCase().includes('installation address')
+    );
+    const invoiceAddress = addressField ? normalizeAddressForMatch(addressField.value) : '';
+    if (invoiceAddress) {
+      const byAddress = candidates.find((j) => {
+        const jAddr = normalizeAddressForMatch(j.address);
+        return jAddr && (jAddr.includes(invoiceAddress) || invoiceAddress.includes(jAddr));
+      });
+      if (byAddress) job = byAddress;
+    }
+  }
+
+  const kind = guessInvoiceType(invoice.total, job.totalCostCents);
+  return kind ? { itemId: job.id, kind } : null;
+}
+
+// --- Part A endpoint: Monday calls this when either status column changes ---
+//
+// Security note: Monday's webhook feature has no per-request signature to
+// verify (unlike Stripe's below), so this relies on a shared-secret token
+// embedded in the webhook URL itself when it's registered with Monday
+// (?token=...), checked against MONDAY_WEBHOOK_SECRET. Without that env
+// var set, this endpoint refuses everything.
+app.post('/api/webhooks/monday-invoice-status', async (req, res) => {
+  if (!process.env.MONDAY_WEBHOOK_SECRET || req.query.token !== process.env.MONDAY_WEBHOOK_SECRET) {
+    console.warn('Monday invoice webhook: rejected request with missing/invalid token.');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Monday's one-time verification handshake when the webhook is first
+  // registered — must be echoed back exactly, unmodified.
+  if (req.body && req.body.challenge) {
+    return res.json({ challenge: req.body.challenge });
+  }
+
+  const event = req.body && req.body.event;
+  const itemId = event && (event.pulseId || event.itemId);
+  const columnId = event && event.columnId;
+
+  // Ack immediately: Monday expects a fast response, and the actual work
+  // below involves several outbound Monday + Stripe API calls.
+  res.status(200).json({ ok: true });
+
+  if (!itemId || !columnId) return;
+  let kind = null;
+  if (columnId === MONDAY_DEPOSIT_STATUS_COLUMN_ID) kind = 'deposit';
+  else if (columnId === MONDAY_BALANCE_STATUS_COLUMN_ID) kind = 'balance';
+  if (!kind) return; // some other column on the board changed, not ours
+
+  await processMondayInvoiceWebhook(itemId, kind);
+});
+
+// --- Part B endpoint: Stripe calls this as invoices are finalized/paid/voided ---
+app.post('/api/webhooks/stripe', async (req, res) => {
+  let stripeEvent;
+  try {
+    const sig = req.headers['stripe-signature'];
+    stripeEvent = stripe.webhooks.constructEvent(req.rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Stripe webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Ack immediately, same reasoning as the Monday webhook above.
+  res.status(200).json({ received: true });
+
+  try {
+    const invoice = stripeEvent.data.object;
+    if (!invoice || invoice.object !== 'invoice') return;
+
+    let itemId = invoice.metadata && invoice.metadata.monday_item_id;
+    let kind = invoice.metadata && invoice.metadata.sunatto_invoice_kind;
+
+    if (!itemId || !kind) {
+      const legacyMatch = await findMondayItemForLegacyInvoice(invoice);
+      if (!legacyMatch) {
+        console.log(`Stripe webhook: could not match invoice ${invoice.id} to a Monday item (event ${stripeEvent.type}).`);
+        return;
+      }
+      itemId = legacyMatch.itemId;
+      kind = legacyMatch.kind;
+    }
+
+    const columnId = kind === 'deposit' ? MONDAY_DEPOSIT_STATUS_COLUMN_ID : MONDAY_BALANCE_STATUS_COLUMN_ID;
+
+    switch (stripeEvent.type) {
+      case 'invoice.finalized':
+        await setMondayStatusColumn(itemId, columnId, 'Sent');
+        console.log(`Stripe webhook: invoice ${invoice.id} finalized — item ${itemId} (${kind}) marked Sent.`);
+        break;
+      case 'invoice.paid':
+        await setMondayStatusColumn(itemId, columnId, 'Paid');
+        await notifyNicoleInvoicePaid(itemId, kind);
+        console.log(`Stripe webhook: invoice ${invoice.id} paid — item ${itemId} (${kind}) marked Paid, Nicole notified.`);
+        break;
+      case 'invoice.voided':
+      case 'invoice.marked_uncollectible': {
+        const verb = stripeEvent.type === 'invoice.voided' ? 'voided' : 'marked uncollectible';
+        await postMondayComment(
+          itemId,
+          `Invoice ${invoice.number || invoice.id} for the ${kind === 'deposit' ? '20% deposit' : '80% balance'} was ${verb} in Stripe — please review manually. Monday's status was left unchanged.`
+        );
+        console.log(`Stripe webhook: invoice ${invoice.id} ${stripeEvent.type} — flagged item ${itemId} for manual review, Monday status left unchanged.`);
+        break;
+      }
+      default:
+        break;
+    }
+  } catch (err) {
+    console.error('Stripe webhook processing error:', err);
   }
 });
 
