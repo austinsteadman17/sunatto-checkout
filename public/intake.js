@@ -125,6 +125,7 @@ function buildCheckoutUrl() {
 // is unreachable or errors, the rep's actual action (copy/send/continue)
 // still goes through untouched.
 let lastRecordedFingerprint = null;
+let lastRecordedLinkId = null; // the hub record id for lastRecordedFingerprint, so sendEmailButton can flag it as emailed after a real send
 
 function currentFingerprint() {
   return JSON.stringify([
@@ -137,14 +138,19 @@ function currentFingerprint() {
   ]);
 }
 
+// Returns the hub record id for the current job/type/amount, creating it
+// first if nothing's been recorded yet (or reusing the cached one if
+// nothing's changed since). Does NOT mark the link as emailed — that's
+// only done by sendEmailButton below, after a real send succeeds, so
+// "Continue to Payment" and "Copy Link" never falsely show up as Sent in
+// the hub.
 async function recordLinkIfNeeded() {
   const fingerprint = currentFingerprint();
-  if (fingerprint === lastRecordedFingerprint) return;
-  lastRecordedFingerprint = fingerprint;
+  if (fingerprint === lastRecordedFingerprint) return lastRecordedLinkId;
 
   try {
     const cents = currentAmountCents();
-    await fetch('/api/links', {
+    const res = await fetch('/api/links', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -157,8 +163,13 @@ async function recordLinkIfNeeded() {
         checkoutUrl: buildCheckoutUrl(),
       }),
     });
+    const data = await res.json();
+    lastRecordedFingerprint = fingerprint;
+    lastRecordedLinkId = data && data.id ? data.id : null;
+    return lastRecordedLinkId;
   } catch (err) {
     console.warn('Could not record this link on the hub (the link itself still works fine):', err);
+    return null;
   }
 }
 
@@ -194,7 +205,9 @@ continueButton.addEventListener('click', async () => {
 sendEmailButton.addEventListener('click', async () => {
   if (sendEmailButton.disabled) return;
 
-  recordLinkIfNeeded(); // fire-and-forget, runs alongside the email send below
+  // Awaited (not fire-and-forget) so we have the link's id in hand before
+  // deciding whether to flag it as emailed below.
+  const linkId = await recordLinkIfNeeded();
   errorEl.textContent = '';
   successEl.textContent = '';
   const originalLabel = sendEmailButton.textContent;
@@ -220,6 +233,12 @@ sendEmailButton.addEventListener('click', async () => {
       throw new Error(data.error || 'Something went wrong sending the email.');
     }
     successEl.textContent = `Sent to ${emailField.value.trim()}.`;
+    // The email genuinely went out — flag the link record so it shows up
+    // as Sent (not Unpaid) in the hub. Fire-and-forget: this is just a
+    // tracking flag, the email itself already succeeded either way.
+    if (linkId) {
+      fetch(`/api/links/${linkId}/mark-emailed`, { method: 'POST' }).catch(() => {});
+    }
   } catch (err) {
     errorEl.textContent = 'Could not send email (' + err.message + '). You can still copy the link above.';
   } finally {

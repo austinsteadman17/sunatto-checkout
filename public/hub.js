@@ -393,6 +393,7 @@ let myJobsLoaded = false;
 let selectedJob = null;       // the job currently being turned into a link
 let genType = 'deposit';
 let genLastRecordedFingerprint = null;
+let genLastRecordedLinkId = null; // the hub record id for genLastRecordedFingerprint, so the Send Email handler can flag it as emailed after a real send
 
 let currentIsAdmin = false;
 let adminUsers = [];
@@ -1019,6 +1020,7 @@ function selectJob(job) {
   generateError.textContent = '';
   generateSuccess.textContent = '';
   genLastRecordedFingerprint = null;
+  genLastRecordedLinkId = null;
 
   selectedJobName.textContent = job.name || '(no name)';
   selectedJobAddress.textContent = job.address || '';
@@ -1109,13 +1111,16 @@ function genFingerprint() {
   ]);
 }
 
+// Returns the hub record id for the current job/type/amount, creating it
+// first if nothing's been recorded yet (or reusing the cached one if
+// nothing's changed since). Does NOT mark the link as emailed — that only
+// happens in the Send Email handler below, after a real send succeeds.
 async function recordGenLinkIfNeeded() {
   const fingerprint = genFingerprint();
-  if (fingerprint === genLastRecordedFingerprint) return;
-  genLastRecordedFingerprint = fingerprint;
+  if (fingerprint === genLastRecordedFingerprint) return genLastRecordedLinkId;
   try {
     const cents = currentGenAmountCents();
-    await fetch('/api/links', {
+    const res = await fetch('/api/links', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1128,8 +1133,13 @@ async function recordGenLinkIfNeeded() {
         checkoutUrl: buildGenCheckoutUrl(),
       }),
     });
+    const data = await res.json();
+    genLastRecordedFingerprint = fingerprint;
+    genLastRecordedLinkId = data && data.id ? data.id : null;
+    return genLastRecordedLinkId;
   } catch (err) {
     console.warn('Could not record this link (the link itself still works fine):', err);
+    return null;
   }
 }
 
@@ -1147,7 +1157,9 @@ genSendEmailButton.addEventListener('click', async () => {
   genSendEmailButton.textContent = 'Sending…';
   genSendEmailButton.disabled = true;
 
-  recordGenLinkIfNeeded(); // fire-and-forget, runs alongside the email send below
+  // Awaited (not fire-and-forget) so we have the link's id in hand before
+  // deciding whether to flag it as emailed below.
+  const linkId = await recordGenLinkIfNeeded();
 
   try {
     const cents = currentGenAmountCents();
@@ -1166,6 +1178,12 @@ genSendEmailButton.addEventListener('click', async () => {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Something went wrong sending the email.');
     generateSuccess.textContent = `Sent to ${genEmailField.value.trim()}.`;
+    // The email genuinely went out — flag the link record so it moves
+    // from Unpaid to Sent in the hub. Fire-and-forget: this is just a
+    // tracking flag, the email itself already succeeded either way.
+    if (linkId) {
+      fetch(`/api/links/${linkId}/mark-emailed`, { method: 'POST' }).catch(() => {});
+    }
   } catch (err) {
     generateError.textContent = 'Could not send email (' + err.message + '). You can still copy the link above.';
   } finally {
@@ -1623,11 +1641,15 @@ function combinedSearchResults(query) {
 // The combined list used to show every payment link and invoice at once
 // regardless of status, which got long fast. Every entry now falls into
 // exactly one of four buckets:
-//   "unpaid"  — nobody's done anything yet: an unpaid payment link, or a
-//               draft invoice nobody's sent yet. This is the default
-//               landing tab.
-//   "sent"    — an invoice that's out the door and waiting on the
-//               customer to pay it. Nothing for staff to do but wait.
+//   "unpaid"  — nobody's actually been sent anything yet: a payment link
+//               that's only ever been generated/opened/copied (never
+//               emailed), or a draft invoice nobody's sent yet. This is
+//               the default landing tab.
+//   "sent"    — out the door and waiting on the customer: an invoice
+//               with Stripe status "open", OR a payment link that's
+//               actually been emailed (via emailSent — see
+//               POST /api/links/:id/mark-emailed in server.js). Nothing
+//               for staff to do but wait.
 //   "pending" — ONLY invoices whose Status is actively processing (e.g.
 //               an ACH payment mid-clear) — money is already moving, so
 //               kept separate from "unpaid" rather than lumped in.
@@ -1637,7 +1659,8 @@ function combinedSearchResults(query) {
 // falls into "sent" as the closest "still not paid" bucket.)
 function entryTabBucket(entry) {
   if (entry.source === 'link') {
-    return entry.item.paid ? 'paid' : 'unpaid';
+    if (entry.item.paid) return 'paid';
+    return entry.item.emailSent ? 'sent' : 'unpaid';
   }
   const invoice = entry.item;
   if (invoice.paymentProcessing) return 'pending';
@@ -1687,6 +1710,8 @@ function renderCombinedRow(entry) {
     const typeLabel = link.type === 'deposit' ? '20% Deposit' : link.type === 'balance' ? '80% Balance' : 'Custom Amount';
     const statusBadge = link.paid
       ? '<span class="badge paid">Paid</span>'
+      : link.emailSent
+      ? '<span class="badge open">Sent</span>'
       : '<span class="badge unpaid">Unpaid</span>';
     const canResend = !!link.customerEmail;
     const linkMondayStatus = link.mondayStatus
