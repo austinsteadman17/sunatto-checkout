@@ -1444,6 +1444,15 @@ function invoicePaymentIsProcessing(invoice) {
 function publicInvoice(invoice, matchedJob) {
   const paymentProcessing = invoicePaymentIsProcessing(invoice);
   const pi = paymentProcessing ? invoice.payment_intent : null;
+  // Custom invoices (see POST /api/custom-invoice) stamp sunatto_invoice_kind
+  // themselves for the deposit/balance split case, same as the pipeline
+  // webhook flow — prefer that authoritative tag over the ratio-based
+  // guessInvoiceType fallback, which exists only for invoices that predate
+  // metadata tagging (created by hand in the dashboard). A flat-amount
+  // custom invoice has no kind at all, so it falls through to "custom".
+  const isCustom = !!(invoice.metadata && invoice.metadata.sunatto_custom_invoice === 'true');
+  const taggedKind = invoice.metadata && invoice.metadata.sunatto_invoice_kind;
+  const type = taggedKind || guessInvoiceType(invoice.total, matchedJob ? matchedJob.totalCostCents : null) || (isCustom ? 'custom' : null);
   return {
     id: invoice.id,
     number: invoice.number,
@@ -1457,7 +1466,9 @@ function publicInvoice(invoice, matchedJob) {
     dueDate: invoice.due_date ? new Date(invoice.due_date * 1000).toISOString() : null,
     hostedInvoiceUrl: invoice.hosted_invoice_url || null,
     dashboardUrl: invoiceDashboardUrl(invoice.id),
-    type: guessInvoiceType(invoice.total, matchedJob ? matchedJob.totalCostCents : null),
+    type,
+    isCustom,
+    createdByName: (invoice.metadata && invoice.metadata.created_by_name) || null,
     jobName: matchedJob ? matchedJob.rawName : null,
     jobAddress: matchedJob ? matchedJob.rawAddress : null,
     // The Monday board group (pipeline stage) this job currently sits in,
@@ -1468,6 +1479,14 @@ function publicInvoice(invoice, matchedJob) {
     paymentProcessing,
     paymentProcessingSince: pi && pi.created ? new Date(pi.created * 1000).toISOString() : null,
   };
+}
+
+// True when this invoice was created by this exact hub user via the
+// Custom Invoice form (see POST /api/custom-invoice) — grants a non-admin
+// visibility into their own custom invoices even though there's no Monday
+// job to match against (invoiceMatchesJobs would otherwise hide them).
+function invoiceCreatedByUser(invoice, user) {
+  return !!(invoice.metadata && invoice.metadata.created_by_user_id === user.id);
 }
 
 async function buildNormalizedJobsForUser(user, admin) {
@@ -1521,7 +1540,7 @@ app.get('/api/invoices', async (req, res) => {
     const results = [];
     for (const invoice of invoices) {
       if (invoice.status === 'void') continue; // voided invoices are clutter, never shown
-      if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs)) continue;
+      if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs) && !invoiceCreatedByUser(invoice, user)) continue;
       const matchedJob = findMatchedJob(invoice, normalizedJobs);
       const meta = manualPaidMeta[invoice.id] || null;
       results.push({
@@ -1563,7 +1582,7 @@ app.get('/api/invoices/voided', async (req, res) => {
     const results = [];
     for (const invoice of invoices) {
       if (invoice.status !== 'void') continue;
-      if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs)) continue;
+      if (!admin && !invoiceMatchesJobs(invoice, normalizedJobs) && !invoiceCreatedByUser(invoice, user)) continue;
       const matchedJob = findMatchedJob(invoice, normalizedJobs);
       const meta = voidMeta[invoice.id] || null;
       results.push({
@@ -1597,7 +1616,7 @@ app.post('/api/invoices/:id/send', async (req, res) => {
 
     if (!admin) {
       const normalizedJobs = await buildNormalizedJobsForUser(user, false);
-      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+      if (!invoiceMatchesJobs(invoice, normalizedJobs) && !invoiceCreatedByUser(invoice, user)) {
         return res.status(404).json({ error: 'Invoice not found.' });
       }
     }
@@ -1644,7 +1663,7 @@ app.delete('/api/invoices/:id', async (req, res) => {
 
     if (!admin) {
       const normalizedJobs = await buildNormalizedJobsForUser(user, false);
-      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+      if (!invoiceMatchesJobs(invoice, normalizedJobs) && !invoiceCreatedByUser(invoice, user)) {
         return res.status(404).json({ error: 'Invoice not found.' });
       }
     }
@@ -1684,7 +1703,7 @@ app.post('/api/invoices/:id/void', async (req, res) => {
 
     if (!admin) {
       const normalizedJobs = await buildNormalizedJobsForUser(user, false);
-      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+      if (!invoiceMatchesJobs(invoice, normalizedJobs) && !invoiceCreatedByUser(invoice, user)) {
         return res.status(404).json({ error: 'Invoice not found.' });
       }
     }
@@ -1760,7 +1779,7 @@ app.post('/api/invoices/:id/mark-paid', async (req, res) => {
 
     if (!admin) {
       const normalizedJobs = await buildNormalizedJobsForUser(user, false);
-      if (!invoiceMatchesJobs(invoice, normalizedJobs)) {
+      if (!invoiceMatchesJobs(invoice, normalizedJobs) && !invoiceCreatedByUser(invoice, user)) {
         return res.status(404).json({ error: 'Invoice not found.' });
       }
     }
@@ -2281,6 +2300,144 @@ async function findMondayItemForLegacyInvoice(invoice) {
   const kind = guessInvoiceType(invoice.total, job.totalCostCents);
   return kind ? { itemId: job.id, kind } : null;
 }
+
+// ---------------------------------------------------------------------
+// 7a4. Custom Invoice — for a customer NOT on the Monday board (an old
+// customer, or one-off work unrelated to the current pipeline). Every
+// field here is typed by hand by whoever's filling out the hub form, so
+// that IS the review step — sends immediately on submit, same philosophy
+// as the main webhook automation once it was tested. No Monday item is
+// involved: metadata deliberately omits monday_item_id, so Part B's
+// Stripe webhook falls through to the legacy email/address matcher for
+// these, which safely finds nothing and no-ops for a genuinely
+// off-pipeline customer.
+//
+// Visibility: tagged with created_by_user_id so the rep who created it
+// can see it in their own Invoices list even though invoiceMatchesJobs
+// (which relies on a Monday job match) would otherwise hide it — see
+// invoiceCreatedByUser above and its use in GET /api/invoices and the
+// invoice action endpoints.
+// ---------------------------------------------------------------------
+const CUSTOM_INVOICE_FOOTER = "Thank you for choosing Southern Energy Distributors. Payments are processed securely via Stripe — we never see or store your card or bank account details. This invoice was generated at the request of our staff. If you believe there's a discrepancy with this amount, please contact us at (210) 504-7669 or office@southernenergydistributors.com.";
+
+app.post('/api/custom-invoice', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const { customerName, customerEmail, customerPhone, customerAddress, mode, description } = req.body;
+
+    if (!customerName || !customerName.trim()) {
+      return res.status(400).json({ error: 'Customer name is required.' });
+    }
+    if (!customerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+      return res.status(400).json({ error: 'A valid email is required.' });
+    }
+    if (!description || !description.trim()) {
+      return res.status(400).json({ error: 'A description is required.' });
+    }
+    if (!['flat', 'split'].includes(mode)) {
+      return res.status(400).json({ error: 'mode must be "flat" or "split".' });
+    }
+
+    let amountCents;
+    let totalCents;
+    let kind = null;
+    if (mode === 'flat') {
+      const amount = parseFloat(req.body.amount);
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ error: 'A valid amount is required.' });
+      }
+      amountCents = Math.round(amount * 100);
+    } else {
+      const totalCost = parseFloat(req.body.totalCost);
+      if (!totalCost || totalCost <= 0) {
+        return res.status(400).json({ error: 'A valid total project cost is required.' });
+      }
+      kind = req.body.kind === 'balance' ? 'balance' : 'deposit';
+      totalCents = Math.round(totalCost * 100);
+      amountCents = kind === 'deposit' ? Math.round(totalCents * 0.2) : Math.round(totalCents * 0.8);
+    }
+
+    // Reuse an existing Stripe customer by email if there is one, same
+    // approach as the main webhook flow.
+    const existingCustomers = await stripe.customers.list({ email: customerEmail, limit: 1 });
+    let customer = existingCustomers.data[0];
+    if (!customer) {
+      customer = await stripe.customers.create({
+        name: customerName,
+        email: customerEmail,
+        phone: customerPhone || undefined,
+        address: customerAddress ? { country: 'US', line1: customerAddress } : undefined,
+      });
+    }
+
+    const metadata = {
+      sunatto_custom_invoice: 'true',
+      created_by_user_id: user.id,
+      created_by_name: fullNameOf(user),
+    };
+
+    let invoice;
+    if (mode === 'flat') {
+      await stripe.invoiceItems.create({
+        customer: customer.id,
+        description: description.trim(),
+        amount: amountCents,
+        currency: 'usd',
+      });
+      invoice = await stripe.invoices.create({
+        customer: customer.id,
+        collection_method: 'send_invoice',
+        due_date: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
+        auto_advance: false,
+        pending_invoice_items_behavior: 'include',
+        footer: CUSTOM_INVOICE_FOOTER,
+        custom_fields: customerAddress ? [{ name: 'Address', value: customerAddress }] : undefined,
+        metadata,
+      });
+    } else {
+      const offsetCents = totalCents - amountCents;
+      const templateId = kind === 'deposit' ? DEPOSIT_INVOICE_TEMPLATE_ID : BALANCE_INVOICE_TEMPLATE_ID;
+
+      await stripe.invoiceItems.create({
+        customer: customer.id,
+        description: description.trim(),
+        amount: totalCents,
+        currency: 'usd',
+      });
+      await stripe.invoiceItems.create({
+        customer: customer.id,
+        description: INVOICE_OFFSET_LINE_SIGNATURES[kind],
+        amount: -offsetCents,
+        currency: 'usd',
+      });
+
+      invoice = await stripe.invoices.create({
+        customer: customer.id,
+        collection_method: 'send_invoice',
+        due_date: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
+        auto_advance: false,
+        pending_invoice_items_behavior: 'include',
+        rendering: { template: templateId },
+        custom_fields: customerAddress ? [{ name: 'Installation Address', value: customerAddress }] : undefined,
+        metadata: { ...metadata, sunatto_invoice_kind: kind },
+      });
+    }
+
+    const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
+    await stripe.invoices.sendInvoice(finalized.id);
+
+    res.json({
+      ok: true,
+      invoiceId: finalized.id,
+      invoiceNumber: finalized.number,
+      hostedInvoiceUrl: finalized.hosted_invoice_url,
+    });
+  } catch (err) {
+    console.error('custom-invoice error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // --- Part A endpoint: Monday calls this when either status column changes ---
 //
