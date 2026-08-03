@@ -588,31 +588,36 @@ Questions? Call us at (210) 504-7669.
 
 — Southern Energy Distributors`;
 
+  // Email HTML can't use CSS custom properties or @media prefers-color-scheme
+  // reliably across clients (Outlook in particular), so these are the
+  // hardcoded sRGB equivalents of sunatto.css's light-mode tokens. Keep them
+  // in sync if the palette changes. Webfonts are stripped by many clients,
+  // so this uses a system stack rather than Space Grotesk / DM Sans.
   const htmlBody = `<!DOCTYPE html>
-<html><body style="margin:0;padding:0;background:#FAFAF9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#16171B;">
+<html><body style="margin:0;padding:0;background:#FBFAF8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0B0D12;-webkit-font-smoothing:antialiased;">
 <div style="max-width:480px;margin:0 auto;padding:40px 16px;">
-  <div style="text-align:center;font-size:13px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#454952;margin-bottom:24px;">
+  <div style="text-align:center;font-size:12px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#5A5E65;margin-bottom:24px;">
     Southern Energy Distributors
   </div>
-  <div style="background:#FFFFFF;border:1px solid #E3E3E6;border-radius:16px;padding:32px;">
+  <div style="background:#FFFFFF;border:1px solid #DCDEE2;border-radius:22px;padding:32px;">
     <p style="margin:0 0 16px 0;font-size:14px;">Hi ${escapeHtml(firstName)},</p>
-    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.5;">
+    <p style="margin:0 0 16px 0;font-size:14px;line-height:1.55;">
       Here is your secure payment link for the ${label} on your solar installation${jobAddress ? ` at ${escapeHtml(jobAddress)}` : ''}.
     </p>
-    <div style="background:#FAFAFA;border:1px solid #E3E3E6;border-radius:10px;padding:14px;margin:20px 0;text-align:center;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;color:#7D818A;">Amount Due</div>
-      <div style="font-size:24px;font-weight:700;color:#16171B;">$${escapeHtml(amount)}</div>
+    <div style="background:#FFF9E3;border:1px solid #FFE9A6;border-radius:22px;padding:16px;margin:20px 0;text-align:center;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.07em;font-weight:600;color:#A46E00;">Amount Due</div>
+      <div style="font-size:26px;font-weight:600;color:#0B0D12;margin-top:2px;">$${escapeHtml(amount)}</div>
     </div>
     <div style="text-align:center;margin:24px 0;">
-      <a href="${checkoutUrl}" style="display:inline-block;background:#16171B;color:#FFFFFF;text-decoration:none;font-weight:700;font-size:14px;padding:12px 28px;border-radius:10px;">
+      <a href="${checkoutUrl}" style="display:inline-block;background:#0B0D12;color:#FFFFFF;text-decoration:none;font-weight:600;font-size:14px;padding:13px 32px;border-radius:999px;">
         Pay Now
       </a>
     </div>
-    <p style="margin:16px 0 0 0;font-size:12px;line-height:1.5;color:#5B5E66;">
+    <p style="margin:16px 0 0 0;font-size:12px;line-height:1.55;color:#5A5E65;">
       ${footnote} Credit card payments include a 3% processing surcharge, disclosed on the payment page before you're charged — ACH bank transfers and debit cards have no surcharge.
     </p>
   </div>
-  <div style="text-align:center;font-size:12px;color:#7D818A;line-height:1.5;margin-top:24px;padding:0 8px;">
+  <div style="text-align:center;font-size:12px;color:#5A5E65;line-height:1.55;margin-top:24px;padding:0 8px;">
     Questions? Call us at (210) 504-7669.
   </div>
 </div>
