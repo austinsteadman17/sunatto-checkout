@@ -12,6 +12,17 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400..600&family=Space+Grotesk:wght@400..700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="sunatto.css" />
+<script>
+  // Applied before first paint so a stored theme choice doesn't flash the
+  // wrong colours on load. The toggle itself lives in hub.js; with nothing
+  // stored, sunatto.css falls back to the OS via prefers-color-scheme.
+  (function () {
+    try {
+      var t = localStorage.getItem('sunatto-hub-theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
 
@@ -352,6 +363,7 @@
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg>
               Voided
             </button>
+            <button type="button" class="icon-btn icon-only" id="theme-toggle-button" title="Switch theme"></button>
             <button type="button" class="icon-btn icon-only" id="invoices-refresh-button" title="Refresh">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 3v6h-6"></path></svg>
             </button>
