@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,243 +8,119 @@
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400..600&family=Space+Grotesk:wght@400..700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="sunatto.css" />
 <script src="https://js.stripe.com/v3/"></script>
 <style>
-  :root {
-    --black: #16171B;
-    --soft-black: #0A0A0A;
-    --white: #FFFFFF;
-    --background: #FAFAF9;
+  /* checkout.html only — everything else comes from sunatto.css.
 
-    --gray-50: #FAFAFA;
-    --gray-100: #F5F5F4;
-    --gray-150: #E3E3E6;
-    --gray-200: #DFE1E6;
-    --gray-300: #C9CBD2;
-    --gray-400: #9AA5B1;
-    --gray-500: #7D818A;
-    --gray-600: #5B5E66;
-    --gray-700: #454952;
-    --gray-800: #232323;
+     NOTE: <html> is pinned to data-theme="light" on purpose. Stripe
+     Elements renders the card/bank fields inside its own iframe using
+     Stripe's default light theme, and page CSS cannot reach inside it.
+     Following the system dark preference here would wrap a bright white
+     payment form in a dark page — which on a page asking for card details
+     reads as broken rather than intentional. To support dark properly,
+     checkout.js would also need to pass a matching `appearance` to
+     stripe.elements(); until then, light everywhere is the honest option. */
 
-    --gold: #F2A900;
-    --gold-dark: #C98A0A;
-    --gold-light: #FDF3D6;
+  .wrap { max-width: 480px; }
 
-    --green: #1A9A5B;
-    --green-light: #E8F7EF;
-
-    --red: #C0392B;
-    --red-light: #FDECEA;
-
-    --sp-1: 8px;
-    --sp-2: 12px;
-    --sp-3: 16px;
-    --sp-4: 20px;
-    --sp-5: 24px;
-    --sp-6: 32px;
-    --sp-7: 40px;
-
-    --radius-sm: 10px;
-    --radius-lg: 16px;
-  }
-
-  * { box-sizing: border-box; }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: var(--background);
-    margin: 0;
-    padding: var(--sp-7) var(--sp-3);
-    color: var(--black);
-    font-size: 14px;
-  }
-
-  .wrap {
-    max-width: 480px;
-    margin: 0 auto;
-  }
-
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    margin-bottom: var(--sp-5);
-    justify-content: center;
-  }
-  .brand img { height: 28px; width: auto; display: block; }
-  .brand span {
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--gray-700);
-  }
-
-  .card {
-    background: var(--white);
-    border: 1px solid var(--gray-150);
-    border-radius: var(--radius-lg);
-    padding: var(--sp-6);
-  }
-
-  .eyebrow {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 700;
-    color: var(--gray-500);
-    margin-bottom: var(--sp-1);
-  }
-
-  h1 {
-    font-size: 22px;
-    font-weight: 700;
-    margin: 0 0 4px 0;
-    color: var(--black);
-  }
-
-  .subtitle {
-    color: var(--gray-600);
-    font-size: 13px;
-    margin-bottom: var(--sp-5);
-  }
-
+  /* Surcharge breakdown rows. */
   .row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 7px 0;
+    padding: 8px 0;
     font-size: 14px;
+    font-variant-numeric: tabular-nums;
   }
   .row.total {
-    font-weight: 700;
+    font-family: var(--font-display);
+    font-weight: 600;
     font-size: 16px;
-    border-top: 1px solid var(--gray-150);
+    letter-spacing: -0.02em;
+    border-top: 1px solid var(--hairline);
     margin-top: var(--sp-1);
     padding-top: var(--sp-3);
   }
 
-  label.field-label {
-    display: block;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 700;
-    color: var(--gray-500);
-    margin-bottom: 6px;
-  }
+  .locked-amount a { color: var(--muted-foreground); text-decoration: underline; }
 
-  .amount-input-group {
-    position: relative;
-    margin-bottom: var(--sp-3);
-  }
-  .amount-input-group .prefix {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--gray-500);
-    font-size: 15px;
-    pointer-events: none;
-  }
+  /* Manual-amount entry (custom payment links). */
   input.amount-input {
     width: 100%;
-    background: var(--white);
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px 10px 26px;
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--black);
-    font-family: inherit;
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 11px 14px 11px 28px;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: var(--font-display);
+    font-variant-numeric: tabular-nums;
+    color: var(--foreground);
+    outline: none;
+    box-shadow: var(--shadow-1);
+    transition: border-color var(--dur-fast) var(--ease-ios),
+                box-shadow var(--dur-fast) var(--ease-ios);
   }
   input.amount-input:focus {
-    outline: none;
-    border-color: var(--gray-400);
+    border-color: color-mix(in oklab, var(--foreground) 30%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand) 25%, transparent);
   }
-  input.amount-input:disabled {
-    background: var(--gray-50);
-    color: var(--gray-500);
-  }
-
-  #amount-continue-button { margin-bottom: var(--sp-4); }
-
-  .locked-amount {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: var(--gray-50);
-    border: 1px solid var(--gray-150);
-    border-radius: var(--radius-sm);
-    padding: 12px 14px;
-    margin-bottom: var(--sp-4);
-  }
-  .locked-amount .label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--gray-500);
-  }
-  .locked-amount .value {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--black);
-  }
-  .locked-amount a {
-    color: var(--gray-600);
-    text-decoration: underline;
-  }
+  input.amount-input:disabled { background: var(--surface-2); color: var(--muted-foreground); }
 
   #payment-element { margin: var(--sp-4) 0; }
 
+  /* Checkout buttons are full-width and stacked, so they're styled by id
+     here rather than reusing the hub's .primary/.secondary classes. */
   button {
     width: 100%;
-    padding: 11px;
-    border-radius: var(--radius-sm);
+    padding: 13px;
+    border-radius: 999px;
     border: none;
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 600;
     cursor: pointer;
     margin-top: var(--sp-2);
     font-family: inherit;
-    transition: transform 0.05s ease, background 0.1s ease;
+    transition: transform var(--dur-fast) var(--ease-ios),
+                box-shadow var(--dur-med) var(--ease-ios);
   }
   button:active { transform: scale(0.97); }
-
   #continue-button, #confirm-button, #amount-continue-button {
-    background: var(--black);
-    color: var(--white);
+    background: var(--primary);
+    color: var(--primary-foreground);
+    box-shadow: var(--shadow-2);
   }
+  #continue-button:hover:not(:disabled),
+  #confirm-button:hover:not(:disabled),
+  #amount-continue-button:hover:not(:disabled) { box-shadow: var(--shadow-3); }
   #continue-button:disabled, #confirm-button:disabled, #amount-continue-button:disabled {
-    background: var(--gray-300);
+    background: var(--surface-2);
+    color: var(--muted-foreground);
+    box-shadow: none;
     cursor: not-allowed;
   }
+  #amount-continue-button { margin-bottom: var(--sp-4); }
   #back-button {
-    background: var(--white);
-    border: 1px solid var(--gray-200);
-    color: var(--black);
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    color: var(--foreground);
+    box-shadow: var(--shadow-1);
   }
 
-  .error-message {
-    color: var(--red);
-    font-size: 13px;
-    margin-top: var(--sp-2);
-    border-radius: var(--radius-sm);
-  }
-  .error-message:not(:empty) {
-    background: var(--red-light);
-    padding: 10px 12px;
-  }
-
+  /* The legally-required surcharge disclosure. Deliberately the loudest
+     thing on the page after the amount — it must not get quieter. */
   .surcharge-note {
-    font-size: 12px;
-    color: var(--gold-dark);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--brand-ink);
     background: var(--gold-light);
-    border: 1px solid var(--gold);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
+    border: 1px solid color-mix(in oklab, var(--brand) 45%, transparent);
+    border-radius: var(--radius-2xl);
+    padding: 12px 14px;
     margin: var(--sp-2) 0;
   }
 
@@ -254,34 +130,24 @@
 
   #success-screen { text-align: center; }
   .success-icon {
-    width: 48px;
-    height: 48px;
+    width: 52px;
+    height: 52px;
     border-radius: 50%;
     background: var(--green-light);
     display: flex;
     align-items: center;
     justify-content: center;
     margin: 0 auto var(--sp-4);
-    color: var(--green);
+    color: var(--success-ink);
   }
   #success-screen h2 {
-    font-size: 18px;
+    font-family: var(--font-display);
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
     margin: 0 0 var(--sp-1);
   }
-  #success-detail {
-    color: var(--gray-600);
-    font-size: 13px;
-    line-height: 1.5;
-  }
-
-  .footnote {
-    font-size: 12px;
-    color: var(--gray-500);
-    text-align: center;
-    line-height: 1.5;
-    margin-top: var(--sp-5);
-    padding: 0 var(--sp-2);
-  }
+  #success-detail { color: var(--muted-foreground); font-size: 13px; line-height: 1.55; }
 </style>
 </head>
 <body>
