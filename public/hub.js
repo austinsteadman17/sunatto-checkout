@@ -1393,6 +1393,63 @@ ciSubmitButton.addEventListener('click', async () => {
   }
 });
 
+// --- Light / dark theme toggle -------------------------------------------
+//
+// sunatto.css reads a data-theme attribute on <html>. With nothing set it
+// follows the OS via prefers-color-scheme; setting it to "light" or "dark"
+// overrides that. The choice is stored per-device in localStorage, and a
+// tiny inline script in hub.html's <head> re-applies it before first paint
+// so there's no flash of the wrong theme on load.
+//
+// Deliberately only two states rather than light/dark/system: a three-way
+// control needs a label to be understandable, and this is a single icon
+// button tucked in beside Refresh. Someone who has never touched it still
+// follows their OS — only pressing it opts them out.
+
+const LS_THEME_KEY = 'sunatto-hub-theme';
+const themeToggleButton = document.getElementById('theme-toggle-button');
+
+const THEME_ICON_SUN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>';
+const THEME_ICON_MOON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
+
+function systemPrefersDark() {
+  return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+}
+
+function activeTheme() {
+  const stored = localStorage.getItem(LS_THEME_KEY);
+  if (stored === 'light' || stored === 'dark') return stored;
+  return systemPrefersDark() ? 'dark' : 'light';
+}
+
+// The icon shows what you'd get by pressing it, not what you're currently in.
+function renderThemeToggle() {
+  if (!themeToggleButton) return;
+  const dark = activeTheme() === 'dark';
+  themeToggleButton.innerHTML = dark ? THEME_ICON_SUN : THEME_ICON_MOON;
+  const label = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  themeToggleButton.title = label;
+  themeToggleButton.setAttribute('aria-label', label);
+}
+
+if (themeToggleButton) {
+  themeToggleButton.addEventListener('click', () => {
+    const next = activeTheme() === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(LS_THEME_KEY, next);
+    document.documentElement.setAttribute('data-theme', next);
+    renderThemeToggle();
+  });
+}
+
+// Keep tracking the OS for anyone who has never pressed the button.
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (!localStorage.getItem(LS_THEME_KEY)) renderThemeToggle();
+  });
+}
+
+renderThemeToggle();
+
 // --- Change PIN (self-service, anyone) ---
 
 changePinToggleButton.addEventListener('click', () => {
