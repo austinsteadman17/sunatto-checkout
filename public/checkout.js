@@ -19,8 +19,12 @@ const AMOUNT_LOCKED = URL_AMOUNT_DOLLARS > 0;
 
 let AMOUNT_CENTS = AMOUNT_LOCKED ? Math.round(URL_AMOUNT_DOLLARS * 100) : 0;
 
+// Matches the hub's fmtMoney() — thousands separators matter most here,
+// since this is the number a homeowner reads before deciding to pay.
 function fmt(cents) {
-  return '$' + (cents / 100).toFixed(2);
+  const dollars = ((cents || 0) / 100).toFixed(2);
+  const [intPart, decPart] = dollars.split('.');
+  return '$' + intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + decPart;
 }
 
 // Live comma-formatting for manually-typed amounts, e.g. typing "18500"
