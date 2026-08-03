@@ -1,0 +1,1229 @@
+/* ==========================================================================
+   Sunatto Portal design system — vanilla CSS translation of DESIGN.md.
+   ==========================================================================
+
+   The source design system (exported from the Lovable project behind
+   sunattosales.com) assumes React + Tailwind v4 + Framer Motion + shadcn.
+   This site is plain static HTML/CSS/JS with no build step, so everything
+   here is a hand translation:
+
+     - Tailwind @theme tokens  ->  plain CSS custom properties (oklch)
+     - Tailwind @utility        ->  real CSS classes (.press, .lift, .glass…)
+     - Framer Motion springs    ->  CSS transitions on the same iOS curve
+     - Tailwind utility classes ->  semantic component classes, so the
+                                    existing markup and hub.js render
+                                    functions keep working untouched
+
+   Design philosophy (from DESIGN.md §1): "Linear/Superhuman density x
+   iOS-native materiality." Near-black surfaces, tabular numerals, spring
+   motion, and NO COLOR UNLESS IT MEANS SOMETHING — the only decorative
+   accent is Sunatto sun-gold, used sparingly.
+
+   Light and dark are both real, considered themes. Dark is warm charcoal
+   with an ambient radial glow, not an inverted light theme (§14).
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Tokens — light mode
+   -------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light dark;
+
+  --background: oklch(0.985 0.003 90);
+  --foreground: oklch(0.16 0.01 260);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.16 0.01 260);
+  --surface: oklch(0.98 0.004 90);
+  --surface-2: oklch(0.955 0.005 90);
+  --hairline: oklch(0.9 0.006 260);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.16 0.01 260);
+
+  --primary: oklch(0.18 0.012 260);
+  --primary-foreground: oklch(0.99 0 0);
+
+  --secondary: oklch(0.955 0.005 90);
+  --secondary-foreground: oklch(0.2 0.012 260);
+
+  --muted: oklch(0.955 0.005 90);
+  --muted-foreground: oklch(0.48 0.012 260);
+
+  --accent: oklch(0.955 0.005 90);
+  --accent-foreground: oklch(0.2 0.012 260);
+
+  /* The one electric accent — Sunatto sun-gold. Used sparingly. */
+  --brand: oklch(0.86 0.17 88);
+  --brand-foreground: oklch(0.18 0.03 80);
+  --brand-ink: oklch(0.58 0.13 78); /* readable gold for text on tints */
+
+  --success: oklch(0.72 0.16 155);
+  --success-ink: oklch(0.52 0.13 155);
+  --warning: oklch(0.78 0.14 75);
+  --info: oklch(0.65 0.14 240);
+  --info-ink: oklch(0.55 0.15 250);
+  --destructive: oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --border: oklch(0.9 0.006 260);
+  --input: oklch(0.92 0.006 260);
+  --ring: oklch(0.55 0.02 260);
+
+  /* Radius scale (§5) — 14px base */
+  --radius: 0.875rem;
+  --radius-sm: calc(var(--radius) - 4px);   /* 10px */
+  --radius-md: calc(var(--radius) - 2px);   /* 12px */
+  --radius-lg: var(--radius);               /* 14px */
+  --radius-xl: calc(var(--radius) + 4px);   /* 18px */
+  --radius-2xl: calc(var(--radius) + 8px);  /* 22px */
+  --radius-3xl: calc(var(--radius) + 12px); /* 26px */
+
+  /* Shadows (§6) */
+  --shadow-1: 0 1px 0 oklch(0 0 0 / 0.04), 0 1px 2px oklch(0 0 0 / 0.04);
+  --shadow-2: 0 2px 6px -1px oklch(0 0 0 / 0.06), 0 8px 24px -6px oklch(0 0 0 / 0.08);
+  --shadow-3: 0 10px 30px -12px oklch(0 0 0 / 0.18), 0 30px 60px -20px oklch(0 0 0 / 0.12);
+  --shadow-lift: 0 20px 50px -20px oklch(0 0 0 / 0.35);
+
+  /* Motion (§7) */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 140ms;
+  --dur-med: 260ms;
+  --dur-slow: 420ms;
+
+  /* Type (§4) */
+  --font-sans: "DM Sans", ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+  --font-display: "Space Grotesk", ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", Inter, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* Spacing */
+  --sp-1: 8px;
+  --sp-2: 12px;
+  --sp-3: 16px;
+  --sp-4: 20px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 40px;
+
+  /* ---- Legacy aliases -------------------------------------------------
+     The previous stylesheet used raw hex variables (--gold, --gray-500,
+     etc.) and a few are still referenced from inline styles and older
+     markup. Mapping them onto the new semantic tokens means nothing goes
+     un-themed in dark mode, and no sweep of every file is required. */
+  --black: var(--foreground);
+  --soft-black: var(--primary);
+  --white: var(--card);
+  --gray-50: var(--surface);
+  --gray-100: var(--surface-2);
+  --gray-150: var(--hairline);
+  --gray-200: var(--border);
+  --gray-300: var(--border);
+  --gray-400: var(--muted-foreground);
+  --gray-500: var(--muted-foreground);
+  --gray-600: var(--muted-foreground);
+  --gray-700: var(--foreground);
+  --gray-800: var(--foreground);
+  --gold: var(--brand);
+  --gold-dark: var(--brand-ink);
+  --gold-light: color-mix(in oklab, var(--brand) 15%, transparent);
+  --gold-glow: color-mix(in oklab, var(--brand) 25%, transparent);
+  --green: var(--success-ink);
+  --green-light: color-mix(in oklab, var(--success) 15%, transparent);
+  --red: var(--destructive);
+  --red-light: color-mix(in oklab, var(--destructive) 12%, transparent);
+  --blue: var(--info-ink);
+  --blue-light: color-mix(in oklab, var(--info) 14%, transparent);
+  --shadow-sm: var(--shadow-1);
+  --shadow-md: var(--shadow-2);
+  --shadow-lg: var(--shadow-3);
+}
+
+/* --------------------------------------------------------------------------
+   2. Tokens — dark mode (warm charcoal, §14)
+   -------------------------------------------------------------------------- */
+
+/* The dark token block is written twice on purpose.
+
+   `prefers-color-scheme` reflects the OS setting only — it cannot be
+   overridden from CSS or JS. So "follow the system" (the default, and what
+   ships) needs the media query, while an explicit `data-theme` attribute on
+   <html> is what makes a manual override possible. Nothing sets that
+   attribute in production today; it exists so the design preview can force a
+   theme, and so a real light/dark toggle can be added later without touching
+   this file. Keep the two blocks in sync. */
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: oklch(0.18 0.004 100);
+    --foreground: oklch(0.975 0.003 100);
+
+    --card: oklch(0.235 0.006 100);
+    --card-foreground: oklch(0.975 0.003 100);
+    --surface: oklch(0.205 0.005 100);
+    --surface-2: oklch(0.275 0.007 100);
+    --hairline: oklch(1 0 0 / 9%);
+
+    --popover: oklch(0.25 0.006 100);
+    --popover-foreground: oklch(0.975 0.003 100);
+
+    --primary: oklch(0.975 0.003 100);
+    --primary-foreground: oklch(0.16 0.005 100);
+
+    --secondary: oklch(0.275 0.007 100);
+    --secondary-foreground: oklch(0.975 0.003 100);
+
+    --muted: oklch(0.265 0.006 100);
+    --muted-foreground: oklch(0.72 0.008 100);
+
+    --accent: oklch(0.3 0.008 100);
+    --accent-foreground: oklch(0.975 0.003 100);
+
+    --brand: oklch(0.9 0.18 90);
+    --brand-foreground: oklch(0.2 0.04 80);
+    --brand-ink: oklch(0.88 0.16 88);
+
+    --success: oklch(0.78 0.17 155);
+    --success-ink: oklch(0.82 0.16 155);
+    --warning: oklch(0.85 0.15 78);
+    --info: oklch(0.74 0.15 240);
+    --info-ink: oklch(0.78 0.13 240);
+    --destructive: oklch(0.72 0.2 25);
+    --destructive-foreground: oklch(0.16 0.005 100);
+
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 14%);
+    --ring: oklch(0.7 0.01 100);
+
+    /* Deeper, more physical shadows in dark (§6). */
+    --shadow-1: 0 1px 0 oklch(0 0 0 / 0.3), 0 1px 2px oklch(0 0 0 / 0.4);
+    --shadow-2: 0 2px 6px -1px oklch(0 0 0 / 0.5), 0 8px 24px -6px oklch(0 0 0 / 0.55);
+    --shadow-3: 0 10px 30px -12px oklch(0 0 0 / 0.7), 0 30px 60px -20px oklch(0 0 0 / 0.5);
+    --shadow-lift: 0 20px 50px -20px oklch(0 0 0 / 0.8);
+
+    /* Tints need more presence against charcoal. */
+    --gold-light: color-mix(in oklab, var(--brand) 18%, transparent);
+    --green-light: color-mix(in oklab, var(--success) 18%, transparent);
+    --red-light: color-mix(in oklab, var(--destructive) 20%, transparent);
+    --blue-light: color-mix(in oklab, var(--info) 18%, transparent);
+  }
+}
+
+:root[data-theme="dark"] {
+    --background: oklch(0.18 0.004 100);
+    --foreground: oklch(0.975 0.003 100);
+
+    --card: oklch(0.235 0.006 100);
+    --card-foreground: oklch(0.975 0.003 100);
+    --surface: oklch(0.205 0.005 100);
+    --surface-2: oklch(0.275 0.007 100);
+    --hairline: oklch(1 0 0 / 9%);
+
+    --popover: oklch(0.25 0.006 100);
+    --popover-foreground: oklch(0.975 0.003 100);
+
+    --primary: oklch(0.975 0.003 100);
+    --primary-foreground: oklch(0.16 0.005 100);
+
+    --secondary: oklch(0.275 0.007 100);
+    --secondary-foreground: oklch(0.975 0.003 100);
+
+    --muted: oklch(0.265 0.006 100);
+    --muted-foreground: oklch(0.72 0.008 100);
+
+    --accent: oklch(0.3 0.008 100);
+    --accent-foreground: oklch(0.975 0.003 100);
+
+    --brand: oklch(0.9 0.18 90);
+    --brand-foreground: oklch(0.2 0.04 80);
+    --brand-ink: oklch(0.88 0.16 88);
+
+    --success: oklch(0.78 0.17 155);
+    --success-ink: oklch(0.82 0.16 155);
+    --warning: oklch(0.85 0.15 78);
+    --info: oklch(0.74 0.15 240);
+    --info-ink: oklch(0.78 0.13 240);
+    --destructive: oklch(0.72 0.2 25);
+    --destructive-foreground: oklch(0.16 0.005 100);
+
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 14%);
+    --ring: oklch(0.7 0.01 100);
+
+    /* Deeper, more physical shadows in dark (§6). */
+    --shadow-1: 0 1px 0 oklch(0 0 0 / 0.3), 0 1px 2px oklch(0 0 0 / 0.4);
+    --shadow-2: 0 2px 6px -1px oklch(0 0 0 / 0.5), 0 8px 24px -6px oklch(0 0 0 / 0.55);
+    --shadow-3: 0 10px 30px -12px oklch(0 0 0 / 0.7), 0 30px 60px -20px oklch(0 0 0 / 0.5);
+    --shadow-lift: 0 20px 50px -20px oklch(0 0 0 / 0.8);
+
+    /* Tints need more presence against charcoal. */
+    --gold-light: color-mix(in oklab, var(--brand) 18%, transparent);
+    --green-light: color-mix(in oklab, var(--success) 18%, transparent);
+    --red-light: color-mix(in oklab, var(--destructive) 20%, transparent);
+    --blue-light: color-mix(in oklab, var(--info) 18%, transparent);
+  }
+
+
+/* --------------------------------------------------------------------------
+   3. Utilities (§13) — the Tailwind @utility set, as real classes
+   -------------------------------------------------------------------------- */
+
+.tabular { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.hairline-b { border-bottom: 1px solid var(--hairline); }
+.hairline-t { border-top: 1px solid var(--hairline); }
+
+.glass {
+  background: color-mix(in oklab, var(--background) 72%, transparent);
+  backdrop-filter: saturate(140%) blur(20px);
+  -webkit-backdrop-filter: saturate(140%) blur(20px);
+}
+
+/* Apply to every tappable element (§7). */
+.press { transition: transform var(--dur-fast) var(--ease-ios); }
+.press:active { transform: scale(0.97); }
+
+/* Apply to hoverable cards. */
+.lift {
+  transition: transform var(--dur-med) var(--ease-ios),
+              box-shadow var(--dur-med) var(--ease-ios);
+}
+.lift:hover { transform: translateY(-1px); box-shadow: var(--shadow-2); }
+
+.scrollbar-hidden { scrollbar-width: none; }
+.scrollbar-hidden::-webkit-scrollbar { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   4. Base
+   -------------------------------------------------------------------------- */
+
+* { box-sizing: border-box; }
+
+html, body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01", "cv11", "cv02";
+  letter-spacing: -0.005em;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--background);
+  margin: 0;
+  padding: var(--sp-7) var(--sp-3);
+  color: var(--foreground);
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* Ambient glow so dark mode has depth instead of feeling flat (§3). */
+@media (prefers-color-scheme: dark) {
+  body:not([data-theme="light"] body) {
+    background:
+      radial-gradient(1200px 600px at 15% -10%, oklch(0.32 0.01 100 / 0.35), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, oklch(0.28 0.01 100 / 0.22), transparent 55%),
+      var(--background);
+    background-attachment: fixed;
+  }
+}
+
+/* Light mode gets one restrained sun-gold wash at the top — the single
+   decorative use of brand color in the whole shell. */
+@media (prefers-color-scheme: light) {
+  body:not([data-theme="dark"] body) {
+    background:
+      radial-gradient(760px 420px at 50% -10%, color-mix(in oklab, var(--brand) 12%, transparent), transparent 62%),
+      var(--background);
+    background-attachment: fixed;
+  }
+}
+
+
+[data-theme="dark"] body {
+  background:
+    radial-gradient(1200px 600px at 15% -10%, oklch(0.32 0.01 100 / 0.35), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, oklch(0.28 0.01 100 / 0.22), transparent 55%),
+    var(--background);
+  background-attachment: fixed;
+}
+[data-theme="light"] body {
+  background:
+    radial-gradient(760px 420px at 50% -10%, color-mix(in oklab, var(--brand) 12%, transparent), transparent 62%),
+    var(--background);
+  background-attachment: fixed;
+}
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.wrap { max-width: 1280px; margin: 0 auto; }
+.wrap.narrow { max-width: 420px; }
+
+/* --------------------------------------------------------------------------
+   5. Brand
+   -------------------------------------------------------------------------- */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: var(--sp-6);
+  justify-content: center;
+}
+.brand img {
+  height: 32px;
+  width: auto;
+  display: block;
+}
+.brand span {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--foreground);
+}
+
+/* --------------------------------------------------------------------------
+   6. Cards & typography
+   -------------------------------------------------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-3xl);
+  padding: var(--sp-6);
+  box-shadow: var(--shadow-2);
+  position: relative;
+}
+
+.eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  color: var(--foreground);
+}
+
+.subtitle {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.55;
+  margin-bottom: var(--sp-5);
+}
+.subtitle:empty { display: none; }
+
+.footnote {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  text-align: center;
+  line-height: 1.55;
+  margin-top: var(--sp-5);
+  padding: 0 var(--sp-2);
+}
+
+/* --------------------------------------------------------------------------
+   7. Inputs (§9)
+   -------------------------------------------------------------------------- */
+
+label.field-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  margin-bottom: 7px;
+  margin-top: var(--sp-3);
+}
+label.field-label:first-of-type { margin-top: 0; }
+
+input.field-input,
+select.field-input,
+textarea.field-input {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--hairline);
+  background: var(--card);
+  color: var(--foreground);
+  padding: 11px 14px;
+  font-size: 16px; /* iOS zoom-guard */
+  font-family: inherit;
+  font-weight: 400;
+  outline: none;
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur-fast) var(--ease-ios),
+              box-shadow var(--dur-fast) var(--ease-ios);
+}
+@media (min-width: 640px) {
+  input.field-input, select.field-input, textarea.field-input { font-size: 14px; }
+}
+input.field-input::placeholder,
+textarea.field-input::placeholder { color: var(--muted-foreground); }
+
+input.field-input:focus,
+select.field-input:focus,
+textarea.field-input:focus {
+  border-color: color-mix(in oklab, var(--foreground) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand) 25%, transparent);
+}
+
+/* Segmented PIN boxes (progressive enhancement over the real password
+   input, wired up in hub.js — see enhancePinInput). */
+.pin-boxes { display: flex; gap: 8px; justify-content: center; margin: var(--sp-1) 0 0; }
+input.pin-box {
+  width: 46px;
+  height: 56px;
+  padding: 0;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 600;
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur-fast) var(--ease-ios),
+              box-shadow var(--dur-fast) var(--ease-ios),
+              transform var(--dur-fast) var(--ease-ios);
+}
+input.pin-box:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--foreground) 30%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--brand) 25%, transparent);
+  transform: translateY(-1px);
+}
+input.pin-box.filled { border-color: color-mix(in oklab, var(--foreground) 22%, transparent); }
+
+.amount-input-group { position: relative; }
+.amount-input-group .prefix {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted-foreground);
+  font-size: 14px;
+  font-weight: 500;
+  pointer-events: none;
+}
+.amount-input-group input.field-input { padding-left: 28px; }
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 400;
+  margin: var(--sp-3) 0;
+}
+.checkbox-row input { width: auto; accent-color: var(--brand); }
+
+/* --------------------------------------------------------------------------
+   8. Buttons (§9) — pill-shaped, always `press`
+   -------------------------------------------------------------------------- */
+
+button.primary {
+  width: 100%;
+  padding: 13px;
+  border-radius: 999px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: var(--sp-5);
+  font-family: inherit;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--shadow-2);
+  transition: transform var(--dur-fast) var(--ease-ios),
+              box-shadow var(--dur-med) var(--ease-ios),
+              opacity var(--dur-fast) var(--ease-ios);
+}
+button.primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--shadow-3); }
+button.primary:active:not(:disabled) { transform: scale(0.97); }
+button.primary:disabled {
+  background: var(--surface-2);
+  color: var(--muted-foreground);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 0 18px;
+  height: 40px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-1);
+  transition: background var(--dur-fast) var(--ease-ios),
+              border-color var(--dur-fast) var(--ease-ios),
+              transform var(--dur-fast) var(--ease-ios);
+}
+button.secondary:hover:not(:disabled) { background: var(--surface-2); }
+button.secondary:active:not(:disabled) { transform: scale(0.97); }
+button.secondary:disabled { color: var(--muted-foreground); opacity: 0.6; cursor: not-allowed; }
+
+button.link-button {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  margin-top: var(--sp-3);
+  padding: 6px;
+  transition: color var(--dur-fast) var(--ease-ios);
+}
+button.link-button:hover { color: var(--foreground); }
+
+button.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--foreground);
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: background var(--dur-fast) var(--ease-ios),
+              transform var(--dur-fast) var(--ease-ios),
+              box-shadow var(--dur-med) var(--ease-ios);
+}
+button.icon-btn svg { flex-shrink: 0; }
+button.icon-btn:hover { background: var(--surface-2); transform: translateY(-1px); box-shadow: var(--shadow-2); }
+button.icon-btn:active { transform: scale(0.97); }
+button.icon-btn.icon-only { padding: 9px; color: var(--muted-foreground); }
+button.icon-btn.primary-action {
+  background: var(--primary);
+  border-color: transparent;
+  color: var(--primary-foreground);
+  box-shadow: var(--shadow-2);
+}
+button.icon-btn.primary-action:hover {
+  background: color-mix(in oklab, var(--primary) 90%, var(--foreground));
+  border-color: transparent;
+}
+
+button.copy-button {
+  flex-shrink: 0;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 0 16px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--foreground);
+  cursor: pointer;
+  box-shadow: var(--shadow-1);
+  transition: background var(--dur-fast) var(--ease-ios), transform var(--dur-fast) var(--ease-ios);
+}
+button.copy-button:hover { background: var(--surface-2); }
+button.copy-button:active { transform: scale(0.97); }
+
+.icon-link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--card);
+  color: var(--muted-foreground);
+  box-shadow: var(--shadow-1);
+  transition: background var(--dur-fast) var(--ease-ios),
+              color var(--dur-fast) var(--ease-ios),
+              transform var(--dur-fast) var(--ease-ios),
+              box-shadow var(--dur-med) var(--ease-ios);
+}
+.icon-link-btn svg { display: block; }
+.icon-link-btn:hover { background: var(--surface-2); color: var(--foreground); transform: translateY(-1px); box-shadow: var(--shadow-2); }
+.icon-link-btn:active { transform: scale(0.96); }
+
+.panel-close-btn {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-ios), color var(--dur-fast) var(--ease-ios), transform var(--dur-fast) var(--ease-ios);
+}
+.panel-close-btn:hover { background: var(--surface-2); color: var(--foreground); }
+.panel-close-btn:active { transform: scale(0.94); }
+
+/* --------------------------------------------------------------------------
+   9. Header / user chip
+   -------------------------------------------------------------------------- */
+
+.hub-header, .admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-5);
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--hairline);
+}
+.hub-header h1, .admin-header h1 { margin: 0; }
+
+.header-actions { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
+.action-group { display: flex; align-items: center; gap: 8px; }
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 5px 16px 5px 5px;
+  box-shadow: var(--shadow-1);
+}
+.user-avatar {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: var(--brand-foreground);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-display);
+}
+.user-chip-text { display: flex; flex-direction: column; line-height: 1.3; }
+.user-chip-text strong { font-size: 12.5px; color: var(--foreground); font-weight: 600; }
+.user-chip-links { font-size: 11.5px; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; }
+.chip-divider { color: var(--hairline); }
+button.chip-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-ios);
+}
+button.chip-link:hover { color: var(--foreground); }
+
+/* --------------------------------------------------------------------------
+   10. Summary tiles
+   -------------------------------------------------------------------------- */
+
+.summary-strip { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-5); flex-wrap: wrap; }
+.summary-strip.two-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+}
+.summary-strip.two-row .summary-pill { min-width: 0; }
+.summary-strip.two-row .summary-pill.money strong { font-size: 16px; }
+@media (max-width: 720px) {
+  .summary-strip.two-row { grid-template-columns: 1fr; }
+}
+
+.summary-pill {
+  flex: 1;
+  min-width: 130px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2xl);
+  padding: 14px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur-med) var(--ease-ios), box-shadow var(--dur-med) var(--ease-ios);
+}
+.summary-pill:hover { transform: translateY(-1px); box-shadow: var(--shadow-2); }
+.summary-pill .pill-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--muted-foreground);
+}
+.summary-pill.icon-paid .pill-icon { background: var(--green-light); color: var(--success-ink); }
+.summary-pill.icon-unpaid .pill-icon { background: var(--gold-light); color: var(--brand-ink); }
+.summary-pill.icon-processing .pill-icon { background: var(--blue-light); color: var(--info-ink); }
+.summary-pill.icon-money .pill-icon { background: var(--primary); color: var(--primary-foreground); }
+.summary-pill strong {
+  display: block;
+  font-size: 20px;
+  color: var(--foreground);
+  font-weight: 600;
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+/* --------------------------------------------------------------------------
+   11. Toolbar & filter tabs
+   -------------------------------------------------------------------------- */
+
+.toolbar { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+.toolbar input.field-input { flex: 1; }
+.toolbar button.secondary { height: auto; }
+
+.view-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: var(--sp-4);
+  padding: 5px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.view-tabs::-webkit-scrollbar { display: none; }
+.view-tab {
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-ios),
+              color var(--dur-fast) var(--ease-ios),
+              transform var(--dur-fast) var(--ease-ios);
+}
+.view-tab:hover { color: var(--foreground); }
+.view-tab:active { transform: scale(0.97); }
+.view-tab.active {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: var(--shadow-1);
+}
+.view-tab .tab-count {
+  display: inline-block;
+  margin-left: 6px;
+  background: color-mix(in oklab, var(--muted-foreground) 16%, transparent);
+  color: var(--muted-foreground);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.view-tab.active .tab-count { background: var(--gold-light); color: var(--brand-ink); }
+
+/* --------------------------------------------------------------------------
+   12. Tables
+   -------------------------------------------------------------------------- */
+
+#table-wrap, #invoices-table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; }
+thead th {
+  text-align: left;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  padding: 0 12px 10px;
+  border-bottom: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+tbody td {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 13px;
+  vertical-align: top;
+}
+tbody tr { transition: background var(--dur-fast) var(--ease-ios); }
+tbody tr:hover { background: var(--surface); }
+tbody tr:last-child td { border-bottom: none; }
+
+.cust-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+.cust-sub { color: var(--muted-foreground); font-size: 12px; margin-top: 2px; }
+
+.row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.row-actions button { padding: 0 12px; height: 32px; font-size: 12px; flex-shrink: 0; }
+.row-actions.invoice-actions { flex-wrap: nowrap; }
+.row-actions.invoice-actions .secondary { padding: 0 12px; height: 32px; font-size: 12px; flex-shrink: 0; }
+
+/* --------------------------------------------------------------------------
+   13. Badges & pills (§9)
+   -------------------------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 10px 4px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.badge::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.badge.paid { background: var(--green-light); color: var(--success-ink); }
+.badge.unpaid { background: var(--surface-2); color: var(--muted-foreground); }
+.badge.deposit { background: var(--gold-light); color: var(--brand-ink); }
+.badge.balance { background: var(--surface-2); color: var(--foreground); }
+.badge.custom { background: var(--blue-light); color: var(--info-ink); }
+.badge.draft { background: var(--surface-2); color: var(--muted-foreground); }
+.badge.open { background: var(--gold-light); color: var(--brand-ink); }
+.badge.processing { background: var(--blue-light); color: var(--info-ink); }
+.badge.void, .badge.uncollectible { background: var(--red-light); color: var(--destructive); }
+.badge.admin { background: var(--gold-light); color: var(--brand-ink); }
+.badge.staff { background: var(--surface-2); color: var(--muted-foreground); }
+
+/* Monday board group names vary a lot in length/wording ("Installed -
+   Review/Corrections") — keep this visually quiet rather than competing
+   with our own fixed-vocabulary status badges above. */
+.badge.monday-status {
+  background: transparent;
+  border: 1px solid var(--hairline);
+  color: var(--muted-foreground);
+}
+.badge.monday-status::before { display: none; }
+
+.source-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   14. Messages & empty states (§9)
+   -------------------------------------------------------------------------- */
+
+.error-message, .success-message {
+  font-size: 13px;
+  margin-top: var(--sp-2);
+  border-radius: var(--radius-lg);
+  font-weight: 500;
+  line-height: 1.5;
+}
+.error-message { color: var(--destructive); }
+.success-message { color: var(--success-ink); }
+.error-message:not(:empty) {
+  background: var(--red-light);
+  padding: 10px 13px;
+  border: 1px solid color-mix(in oklab, var(--destructive) 22%, transparent);
+}
+.success-message:not(:empty) {
+  background: var(--green-light);
+  padding: 10px 13px;
+  border: 1px solid color-mix(in oklab, var(--success) 25%, transparent);
+}
+
+.empty-state, .job-picker-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--radius-3xl);
+  border: 1px dashed var(--hairline);
+  background: color-mix(in oklab, var(--surface) 40%, transparent);
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+/* --------------------------------------------------------------------------
+   15. Panels (change PIN, admin, reset PIN)
+   -------------------------------------------------------------------------- */
+
+.change-pin-panel, .create-user-card, .reset-pin-panel {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2xl);
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-5);
+}
+.change-pin-panel {
+  display: none;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  max-width: 380px;
+}
+.reset-pin-panel { display: none; margin-bottom: var(--sp-4); }
+.change-pin-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.pin-field-stack { display: flex; flex-direction: column; gap: var(--sp-4); }
+.pin-field-stack .pin-boxes { justify-content: flex-start; }
+.panel-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-4); align-items: center; }
+.panel-actions button.primary { margin-top: 0; width: auto; padding: 11px 22px; }
+.panel-actions button.secondary { height: 42px; }
+.create-user-card .field-row { display: flex; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.create-user-card .field-row > div { flex: 1; min-width: 140px; }
+
+/* --------------------------------------------------------------------------
+   16. Generate / job picker
+   -------------------------------------------------------------------------- */
+
+.job-picker-list {
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2xl);
+  margin-top: var(--sp-2);
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+}
+.job-picker-row {
+  padding: 13px 15px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-ios);
+}
+.job-picker-row:hover { background: var(--surface-2); }
+.job-picker-row:active { background: var(--surface-2); }
+.job-picker-row + .job-picker-row { border-top: 1px solid var(--hairline); }
+
+.selected-job-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2xl);
+  padding: 13px 15px;
+  margin-bottom: var(--sp-4);
+}
+
+.type-toggle {
+  display: flex;
+  border-radius: 999px;
+  padding: 5px;
+  margin-bottom: var(--sp-4);
+  background: var(--surface-2);
+  gap: 4px;
+}
+.type-toggle button {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  padding: 9px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-ios),
+              color var(--dur-fast) var(--ease-ios),
+              transform var(--dur-fast) var(--ease-ios);
+}
+.type-toggle button:active { transform: scale(0.97); }
+.type-toggle button.active {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: var(--shadow-1);
+}
+
+/* The one place brand gold carries real meaning: the locked-in amount
+   the customer will actually be charged. */
+.locked-amount {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  background: var(--gold-light);
+  border: 1px solid color-mix(in oklab, var(--brand) 35%, transparent);
+  border-radius: var(--radius-2xl);
+  padding: 15px 17px;
+  margin-top: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.locked-amount .label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground);
+  font-weight: 500;
+  font-size: 12.5px;
+}
+.locked-amount .value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.link-block {
+  display: none;
+  margin-top: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-2xl);
+  padding: var(--sp-3);
+}
+.link-block .field-label { margin-top: 0; }
+.link-row { display: flex; gap: 8px; }
+.link-row input.field-input { font-size: 12px; color: var(--muted-foreground); }
+
+/* --------------------------------------------------------------------------
+   17. Modals (§9 sheets/dialogs)
+   -------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklab, var(--background) 60%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 1000;
+  animation: modal-fade-in var(--dur-fast) var(--ease-ios);
+}
+@keyframes modal-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.modal-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-lift);
+  padding: 26px 26px 22px;
+  position: relative;
+  animation: modal-pop-in var(--dur-med) var(--ease-ios);
+}
+@keyframes modal-pop-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gold-light);
+  color: var(--brand-ink);
+  margin-bottom: 14px;
+}
+.modal-icon.danger-icon { background: var(--red-light); color: var(--destructive); }
+.modal-title {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+  margin-bottom: 6px;
+}
+.modal-message {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  margin: 0 0 22px;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.modal-actions button.secondary { height: 40px; }
+.modal-actions button.icon-btn { padding: 0 18px; height: 40px; }
+.modal-actions button.icon-btn.danger-action {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+  border-color: transparent;
+}
+.modal-actions button.icon-btn.danger-action:hover {
+  background: color-mix(in oklab, var(--destructive) 88%, black);
+}
+.modal-card textarea.field-input {
+  min-height: 78px;
+  resize: vertical;
+  font-family: inherit;
+  padding-top: 10px;
+  margin-bottom: 4px;
+}
+.modal-card .error-message { margin-bottom: 10px; }
+
+/* --------------------------------------------------------------------------
+   18. View visibility (unchanged behaviour — hub.js toggles these)
+   -------------------------------------------------------------------------- */
+
+#hub-view, #generate-view, #admin-view, #invoices-view { display: none; }
