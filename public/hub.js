@@ -53,6 +53,7 @@ const hubError = document.getElementById('hub-error');
 const tableWrap = document.getElementById('table-wrap');
 
 const generateView = document.getElementById('generate-view');
+const generateSubtitle = document.getElementById('generate-subtitle');
 const jobPickerStep = document.getElementById('job-picker-step');
 const jobFormStep = document.getElementById('job-form-step');
 const jobSearchInput = document.getElementById('job-search-input');
@@ -80,6 +81,29 @@ const genSendEmailButton = document.getElementById('gen-send-email-button');
 const genLinkBlock = document.getElementById('gen-link-block');
 const genGeneratedLinkField = document.getElementById('gen-generated-link');
 const genCopyLinkButton = document.getElementById('gen-copy-link-button');
+
+const customInvoiceEntryButton = document.getElementById('custom-invoice-entry-button');
+const customInvoiceStep = document.getElementById('custom-invoice-step');
+const ciBackButton = document.getElementById('ci-back-button');
+const ciNameField = document.getElementById('ci-name');
+const ciEmailField = document.getElementById('ci-email');
+const ciPhoneField = document.getElementById('ci-phone');
+const ciAddressField = document.getElementById('ci-address');
+const ciModeFlatBtn = document.getElementById('ci-mode-flat-btn');
+const ciModeSplitBtn = document.getElementById('ci-mode-split-btn');
+const ciFlatBlock = document.getElementById('ci-flat-block');
+const ciFlatDescriptionField = document.getElementById('ci-flat-description');
+const ciFlatAmountField = document.getElementById('ci-flat-amount');
+const ciSplitBlock = document.getElementById('ci-split-block');
+const ciSplitDescriptionField = document.getElementById('ci-split-description');
+const ciSplitDepositBtn = document.getElementById('ci-split-deposit-btn');
+const ciSplitBalanceBtn = document.getElementById('ci-split-balance-btn');
+const ciSplitTotalCostField = document.getElementById('ci-split-total-cost');
+const ciAmountDueCaption = document.getElementById('ci-amount-due-caption');
+const ciAmountDueValue = document.getElementById('ci-amount-due-value');
+const ciError = document.getElementById('ci-error');
+const ciSuccess = document.getElementById('ci-success');
+const ciSubmitButton = document.getElementById('ci-submit-button');
 
 const changePinToggleButton = document.getElementById('change-pin-toggle-button');
 const changePinPanel = document.getElementById('change-pin-panel');
@@ -809,7 +833,7 @@ function renderVoidedTable() {
 
   const rows = invoices.map((invoice) => {
     const typeBadge = invoice.type
-      ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
+      ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : invoice.type === 'balance' ? '80% Balance' : 'Custom Invoice'}</span>`
       : '—';
     const editUrl = invoice.dashboardUrl;
 
@@ -971,7 +995,9 @@ async function openGenerateView() {
   generateSuccess.textContent = '';
   selectedJob = null;
   jobFormStep.style.display = 'none';
+  customInvoiceStep.style.display = 'none';
   jobPickerStep.style.display = 'block';
+  generateSubtitle.textContent = "Pick a job you're attached to on the Monday board.";
   showGenerate();
 
   if (!myJobsLoaded) {
@@ -1216,6 +1242,155 @@ backToListButton.addEventListener('click', () => {
 });
 backToHubButton.addEventListener('click', () => {
   showInvoices();
+});
+
+// --- Custom Invoice (for a customer NOT on the Monday board) ---
+//
+// A parallel path off the same "Generate Payment Link" screen: instead of
+// picking a job, every field is typed by hand, and submitting creates and
+// sends a real Stripe invoice (not a payment link) via POST
+// /api/custom-invoice. The rep can choose a flat one-off amount, or the
+// same 20%/80% split used for pipeline jobs if this is a full project.
+
+let ciMode = 'flat';
+let ciSplitKind = 'deposit';
+
+attachCommaFormatting(ciFlatAmountField);
+attachCommaFormatting(ciSplitTotalCostField);
+
+function openCustomInvoiceStep() {
+  ciError.textContent = '';
+  ciSuccess.textContent = '';
+  ciNameField.value = '';
+  ciEmailField.value = '';
+  ciPhoneField.value = '';
+  ciAddressField.value = '';
+  ciFlatDescriptionField.value = '';
+  ciFlatAmountField.value = '';
+  ciSplitDescriptionField.value = '';
+  ciSplitTotalCostField.value = '';
+  setCiMode('flat');
+  setCiSplitKind('deposit');
+  generateSubtitle.textContent = 'Create and send a one-off Stripe invoice for a customer not on the Monday board.';
+  jobPickerStep.style.display = 'none';
+  jobFormStep.style.display = 'none';
+  customInvoiceStep.style.display = 'block';
+  recomputeCi();
+}
+
+function closeCustomInvoiceStep() {
+  customInvoiceStep.style.display = 'none';
+  jobPickerStep.style.display = 'block';
+  generateSubtitle.textContent = "Pick a job you're attached to on the Monday board.";
+}
+
+function setCiMode(mode) {
+  ciMode = mode;
+  ciModeFlatBtn.classList.toggle('active', mode === 'flat');
+  ciModeSplitBtn.classList.toggle('active', mode === 'split');
+  ciFlatBlock.style.display = mode === 'flat' ? 'block' : 'none';
+  ciSplitBlock.style.display = mode === 'split' ? 'block' : 'none';
+  updateCiAmountCaption();
+  recomputeCi();
+}
+
+function setCiSplitKind(kind) {
+  ciSplitKind = kind;
+  ciSplitDepositBtn.classList.toggle('active', kind === 'deposit');
+  ciSplitBalanceBtn.classList.toggle('active', kind === 'balance');
+  updateCiAmountCaption();
+  recomputeCi();
+}
+
+function updateCiAmountCaption() {
+  ciAmountDueCaption.textContent = ciMode === 'flat'
+    ? 'Amount due'
+    : (ciSplitKind === 'deposit' ? 'Amount due (20%)' : 'Amount due (80%)');
+}
+
+function currentCiAmountCents() {
+  if (ciMode === 'flat') {
+    const amt = parseFloat((ciFlatAmountField.value || '').replace(/,/g, ''));
+    if (!amt || amt <= 0) return 0;
+    return Math.round(amt * 100);
+  }
+  const total = parseFloat((ciSplitTotalCostField.value || '').replace(/,/g, ''));
+  if (!total || total <= 0) return 0;
+  const rate = ciSplitKind === 'deposit' ? 0.2 : 0.8;
+  return Math.round(total * rate * 100);
+}
+
+function recomputeCi() {
+  const cents = currentCiAmountCents();
+  ciAmountDueValue.textContent = fmtMoney(cents);
+
+  const email = ciEmailField.value.trim();
+  const name = ciNameField.value.trim();
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const descriptionOk = ciMode === 'flat'
+    ? !!ciFlatDescriptionField.value.trim()
+    : !!ciSplitDescriptionField.value.trim();
+
+  ciSubmitButton.disabled = !(name && validEmail && cents > 0 && descriptionOk);
+}
+
+customInvoiceEntryButton.addEventListener('click', openCustomInvoiceStep);
+ciBackButton.addEventListener('click', closeCustomInvoiceStep);
+ciModeFlatBtn.addEventListener('click', () => setCiMode('flat'));
+ciModeSplitBtn.addEventListener('click', () => setCiMode('split'));
+ciSplitDepositBtn.addEventListener('click', () => setCiSplitKind('deposit'));
+ciSplitBalanceBtn.addEventListener('click', () => setCiSplitKind('balance'));
+[ciNameField, ciEmailField, ciFlatDescriptionField, ciFlatAmountField, ciSplitDescriptionField, ciSplitTotalCostField]
+  .forEach((field) => field.addEventListener('input', recomputeCi));
+
+ciSubmitButton.addEventListener('click', async () => {
+  if (ciSubmitButton.disabled) return;
+  ciError.textContent = '';
+  ciSuccess.textContent = '';
+  const original = ciSubmitButton.textContent;
+  ciSubmitButton.textContent = 'Sending…';
+  ciSubmitButton.disabled = true;
+
+  const payload = {
+    customerName: ciNameField.value.trim(),
+    customerEmail: ciEmailField.value.trim(),
+    customerPhone: ciPhoneField.value.trim(),
+    customerAddress: ciAddressField.value.trim(),
+    mode: ciMode,
+  };
+  if (ciMode === 'flat') {
+    payload.description = ciFlatDescriptionField.value.trim();
+    payload.amount = (currentCiAmountCents() / 100).toFixed(2);
+  } else {
+    payload.description = ciSplitDescriptionField.value.trim();
+    payload.kind = ciSplitKind;
+    payload.totalCost = ciSplitTotalCostField.value.replace(/,/g, '');
+  }
+
+  try {
+    const res = await fetch('/api/custom-invoice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not create the invoice.');
+
+    ciSuccess.textContent = `Invoice ${data.invoiceNumber || ''} sent to ${payload.customerEmail}.`;
+    ciNameField.value = '';
+    ciEmailField.value = '';
+    ciPhoneField.value = '';
+    ciAddressField.value = '';
+    ciFlatDescriptionField.value = '';
+    ciFlatAmountField.value = '';
+    ciSplitDescriptionField.value = '';
+    ciSplitTotalCostField.value = '';
+  } catch (err) {
+    ciError.textContent = err.message;
+  } finally {
+    ciSubmitButton.textContent = original;
+    recomputeCi();
+  }
 });
 
 // --- Change PIN (self-service, anyone) ---
@@ -1745,7 +1920,7 @@ function renderCombinedRow(entry) {
   const { label: statusLabel, badgeClass } = invoiceStatusInfo(invoice);
   const statusBadge = `<span class="badge ${badgeClass}">${statusLabel}</span>`;
   const typeBadge = invoice.type
-    ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : '80% Balance'}</span>`
+    ? `<span class="badge ${invoice.type}">${invoice.type === 'deposit' ? '20% Deposit' : invoice.type === 'balance' ? '80% Balance' : 'Custom Invoice'}</span>`
     : '—';
   const hostedUrl = invoice.hostedInvoiceUrl;
   const editUrl = invoice.dashboardUrl;
