@@ -8,124 +8,19 @@
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400..600&family=Space+Grotesk:wght@400..700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="sunatto.css" />
 <style>
-  :root {
-    --black: #16171B;
-    --soft-black: #0A0A0A;
-    --white: #FFFFFF;
-    --background: #FAFAF9;
+  /* intake.html only — everything else comes from sunatto.css. */
 
-    --gray-50: #FAFAFA;
-    --gray-100: #F5F5F4;
-    --gray-150: #E3E3E6;
-    --gray-200: #DFE1E6;
-    --gray-300: #C9CBD2;
-    --gray-400: #9AA5B1;
-    --gray-500: #7D818A;
-    --gray-600: #5B5E66;
-    --gray-700: #454952;
-    --gray-800: #232323;
+  /* Single-column form page, so it's capped narrower than the hub, which
+     has to fit wide data tables. */
+  .wrap { max-width: 480px; }
 
-    --gold: #F2A900;
-    --gold-dark: #C98A0A;
-    --gold-light: #FDF3D6;
-
-    --green: #1A9A5B;
-    --green-light: #E8F7EF;
-
-    --red: #C0392B;
-    --red-light: #FDECEA;
-
-    --sp-1: 8px;
-    --sp-2: 12px;
-    --sp-3: 16px;
-    --sp-4: 20px;
-    --sp-5: 24px;
-    --sp-6: 32px;
-    --sp-7: 40px;
-
-    --radius-sm: 10px;
-    --radius-lg: 16px;
-  }
-
-  * { box-sizing: border-box; }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: var(--background);
-    margin: 0;
-    padding: var(--sp-7) var(--sp-3);
-    color: var(--black);
-    font-size: 14px;
-  }
-
-  .wrap { max-width: 480px; margin: 0 auto; }
-
-  .brand { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-5); justify-content: center; }
-  .brand img { height: 28px; width: auto; display: block; }
-  .brand span { font-size: 13px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--gray-700); }
-
-  .card {
-    background: var(--white);
-    border: 1px solid var(--gray-150);
-    border-radius: var(--radius-lg);
-    padding: var(--sp-6);
-  }
-
-  .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--gray-500); margin-bottom: var(--sp-1); }
-  h1 { font-size: 22px; font-weight: 700; margin: 0 0 4px 0; color: var(--black); }
-  .subtitle { color: var(--gray-600); font-size: 13px; margin-bottom: var(--sp-5); }
-
-  .type-toggle {
-    display: flex;
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-sm);
-    padding: 3px;
-    margin-bottom: var(--sp-5);
-    background: var(--gray-50);
-  }
-  .type-toggle button {
-    flex: 1;
-    background: transparent;
-    border: none;
-    border-radius: 7px;
-    padding: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    font-family: inherit;
-    color: var(--gray-600);
-    cursor: pointer;
-  }
-  .type-toggle button.active {
-    background: var(--black);
-    color: var(--white);
-  }
-
-  label.field-label {
-    display: block;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 700;
-    color: var(--gray-500);
-    margin-bottom: 6px;
-    margin-top: var(--sp-3);
-  }
-  label.field-label:first-of-type { margin-top: 0; }
-
-  input.field-input {
-    width: 100%;
-    background: var(--white);
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    font-size: 14px;
-    font-weight: 400;
-    color: var(--black);
-    font-family: inherit;
-  }
-  input.field-input:focus { outline: none; border-color: var(--gray-400); }
-
+  /* Mapbox address autocomplete dropdown (see intake.js). Positioned
+     against .address-field-wrap so it hangs under the address input. */
   .address-field-wrap { position: relative; }
   .address-suggestions {
     display: none;
@@ -133,141 +28,25 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    background: var(--white);
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-sm);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--shadow-3);
     z-index: 10;
     max-height: 220px;
     overflow-y: auto;
   }
   .address-suggestions.open { display: block; }
   .address-suggestion {
-    padding: 10px 12px;
+    padding: 11px 14px;
     font-size: 13px;
-    color: var(--black);
+    color: var(--foreground);
     cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-ios);
   }
   .address-suggestion:hover,
-  .address-suggestion.highlighted {
-    background: var(--gray-50);
-  }
-  .address-suggestion + .address-suggestion { border-top: 1px solid var(--gray-100); }
-
-  .amount-input-group { position: relative; }
-  .amount-input-group .prefix {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--gray-500);
-    font-size: 14px;
-    pointer-events: none;
-  }
-  .amount-input-group input.field-input { padding-left: 26px; }
-
-  .locked-amount {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: var(--gray-50);
-    border: 1px solid var(--gray-150);
-    border-radius: var(--radius-sm);
-    padding: 12px 14px;
-    margin-top: var(--sp-3);
-  }
-  .locked-amount .label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gray-500); }
-  .locked-amount .value { font-size: 18px; font-weight: 700; color: var(--black); }
-
-  button.primary {
-    width: 100%;
-    padding: 11px;
-    border-radius: var(--radius-sm);
-    border: none;
-    font-size: 14px;
-    font-weight: 700;
-    cursor: pointer;
-    margin-top: var(--sp-5);
-    font-family: inherit;
-    background: var(--black);
-    color: var(--white);
-    transition: transform 0.05s ease;
-  }
-  button.primary:active { transform: scale(0.97); }
-  button.primary:disabled { background: var(--gray-300); cursor: not-allowed; }
-
-  .link-block {
-    display: none;
-    margin-top: var(--sp-3);
-    background: var(--gray-50);
-    border: 1px solid var(--gray-150);
-    border-radius: var(--radius-sm);
-    padding: var(--sp-3);
-  }
-  .link-block .field-label { margin-top: 0; }
-  .link-row { display: flex; gap: 8px; }
-  .link-row input.field-input { background: var(--white); font-size: 12px; color: var(--gray-600); }
-  button.copy-button {
-    flex-shrink: 0;
-    background: var(--white);
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-sm);
-    padding: 0 14px;
-    font-size: 13px;
-    font-weight: 700;
-    font-family: inherit;
-    color: var(--black);
-    cursor: pointer;
-  }
-  button.copy-button:active { transform: scale(0.97); }
-
-  button.secondary {
-    width: 100%;
-    padding: 11px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--gray-200);
-    font-size: 14px;
-    font-weight: 700;
-    cursor: pointer;
-    margin-top: var(--sp-2);
-    font-family: inherit;
-    background: var(--white);
-    color: var(--black);
-    transition: transform 0.05s ease;
-  }
-  button.secondary:active { transform: scale(0.97); }
-  button.secondary:disabled { color: var(--gray-400); border-color: var(--gray-150); cursor: not-allowed; }
-
-  .success-message {
-    color: var(--green);
-    font-size: 13px;
-    margin-top: var(--sp-2);
-    border-radius: var(--radius-sm);
-  }
-  .success-message:not(:empty) {
-    background: var(--green-light);
-    padding: 10px 12px;
-  }
-
-  .error-message {
-    color: var(--red);
-    font-size: 13px;
-    margin-top: var(--sp-2);
-    border-radius: var(--radius-sm);
-  }
-  .error-message:not(:empty) {
-    background: var(--red-light);
-    padding: 10px 12px;
-  }
-
-  .footnote {
-    font-size: 12px;
-    color: var(--gray-500);
-    text-align: center;
-    line-height: 1.5;
-    margin-top: var(--sp-5);
-    padding: 0 var(--sp-2);
-  }
+  .address-suggestion.highlighted { background: var(--surface-2); }
+  .address-suggestion + .address-suggestion { border-top: 1px solid var(--hairline); }
 </style>
 </head>
 <body>
