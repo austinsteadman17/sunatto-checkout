@@ -153,6 +153,8 @@ async function init() {
       customerEmail: CUSTOMER_EMAIL,
       customerPhone: CUSTOMER_PHONE,
       jobAddress: JOB_ADDRESS,
+      // Ties this payment back to the exact hub link record it came from.
+      linkId: new URLSearchParams(window.location.search).get('ref') || '',
     }),
   });
   const intentData = await intentRes.json();
