@@ -434,7 +434,7 @@ let invoicesLoaded = false;
 // tab rather than folded into "unpaid" since it's a materially different
 // situation (money is already moving) from "nobody's done anything yet."
 // "paid" = done. See entryTabBucket() for the exact mapping.
-let currentInvoicesTab = 'unpaid';
+let currentInvoicesTab = 'overdue';
 
 let allVoidedInvoices = [];
 
@@ -1813,12 +1813,12 @@ function renderInvoicesSummary(invoices, links) {
   const iconMoney = icon('<rect x="2" y="6" width="20" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle>');
 
   invoicesSummaryStrip.innerHTML = `
-    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${unpaidCount}</strong>Unpaid</div></div>
+    <div class="summary-pill icon-unpaid">${iconClock}<div><strong>${unpaidCount}</strong>Outstanding</div></div>
     <div class="summary-pill icon-processing">${iconProcessing}<div><strong>${processingCount}</strong>Processing</div></div>
     <div class="summary-pill icon-paid">${iconCheck}<div><strong>${paidCount}</strong>Paid</div></div>
-    <div class="summary-pill money icon-unpaid">${iconMoney}<div><strong>${fmtMoney(unpaidCents)}</strong>Unpaid value</div></div>
-    <div class="summary-pill money icon-processing">${iconMoney}<div><strong>${fmtMoney(processingCents)}</strong>Processing value</div></div>
-    <div class="summary-pill money icon-paid">${iconMoney}<div><strong>${fmtMoney(paidCents)}</strong>Paid value</div></div>
+    <div class="summary-pill money icon-unpaid">${iconMoney}<div><strong>${fmtMoney(unpaidCents)}</strong>Outstanding</div></div>
+    <div class="summary-pill money icon-processing">${iconMoney}<div><strong>${fmtMoney(processingCents)}</strong>Clearing</div></div>
+    <div class="summary-pill money icon-paid">${iconMoney}<div><strong>${fmtMoney(paidCents)}</strong>Collected</div></div>
   `;
 }
 
@@ -1872,38 +1872,92 @@ function combinedSearchResults(query) {
 //
 // The combined list used to show every payment link and invoice at once
 // regardless of status, which got long fast. Every entry now falls into
-// exactly one of four buckets:
-//   "unpaid"  — nobody's actually been sent anything yet: a payment link
-//               that's only ever been generated/opened/copied (never
-//               emailed), or a draft invoice nobody's sent yet. This is
-//               the default landing tab.
-//   "sent"    — out the door and waiting on the customer: an invoice
-//               with Stripe status "open", OR a payment link that's
-//               actually been emailed (via emailSent — see
-//               POST /api/links/:id/mark-emailed in server.js). Nothing
-//               for staff to do but wait.
-//   "pending" — ONLY invoices whose Status is actively processing (e.g.
-//               an ACH payment mid-clear) — money is already moving, so
-//               kept separate from "unpaid" rather than lumped in.
-//   "paid"    — a paid payment link or a paid invoice. Done.
-// (Void/uncollectible invoices don't appear here at all — void ones live
-// in the separate Voided tab already, and the rare uncollectible case
-// falls into "sent" as the closest "still not paid" bucket.)
-function entryTabBucket(entry) {
-  if (entry.source === 'link') {
-    if (entry.item.paid) return 'paid';
-    return entry.item.emailSent ? 'sent' : 'unpaid';
-  }
-  const invoice = entry.item;
-  if (invoice.paymentProcessing) return 'pending';
-  if (invoice.status === 'paid') return 'paid';
-  if (invoice.status === 'draft') return 'unpaid';
-  if (invoice.status === 'open') return 'sent';
-  return 'sent'; // uncollectible or any other odd status
+// exactly one of five lifecycle stages. The old scheme had a bucket called
+// "unpaid" that actually meant "not sent yet", while the summary tile above
+// used "unpaid" to mean "not paid" — two different meanings for one word,
+// which made it genuinely hard to tell what had gone out. These names each
+// mean exactly one thing:
+//
+//   "not_sent"   — nothing has reached the customer: a generated payment
+//                  link that was never emailed, or a draft invoice.
+//   "awaiting"   — sent, not yet past its due date. Nothing to do but wait.
+//   "overdue"    — sent and past due. This is the chase list.
+//   "processing" — the customer has paid and the money is clearing (e.g.
+//                  ACH, ~4-5 business days). Do NOT chase these.
+//   "paid"       — done.
+//
+// Invoices carry a real due date from Stripe. Payment links don't have one
+// at all, so "overdue" for a link is our own chase threshold rather than a
+// contractual date — hence the named constant below rather than a magic 7.
+const LINK_OVERDUE_DAYS = 7;
+
+const STAGE_META = {
+  not_sent:   { label: 'Not Sent',   cls: 'notsent' },
+  awaiting:   { label: 'Awaiting',   cls: 'awaiting' },
+  overdue:    { label: 'Overdue',    cls: 'overdue' },
+  processing: { label: 'Processing', cls: 'processing' },
+  paid:       { label: 'Paid',       cls: 'paid' },
+};
+
+function daysSince(iso) {
+  if (!iso) return null;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
 }
 
+function entryStage(entry) {
+  if (entry.source === 'link') {
+    const link = entry.item;
+    if (link.paid) return 'paid';
+    if (!link.emailSent) return 'not_sent';
+    const age = daysSince(link.lastSentAt);
+    return age !== null && age > LINK_OVERDUE_DAYS ? 'overdue' : 'awaiting';
+  }
+  const invoice = entry.item;
+  if (invoice.paymentProcessing) return 'processing';
+  if (invoice.status === 'paid') return 'paid';
+  if (invoice.status === 'draft') return 'not_sent';
+  if (invoice.dueDate && new Date(invoice.dueDate).getTime() < Date.now()) return 'overdue';
+  return 'awaiting';
+}
+
+function stageBadgeHtml(entry) {
+  const stage = entryStage(entry);
+  const meta = STAGE_META[stage];
+  let extra = '';
+  if (stage === 'overdue') {
+    const days = entry.source === 'invoice'
+      ? daysSince(entry.item.dueDate)
+      : daysSince(entry.item.lastSentAt) - LINK_OVERDUE_DAYS;
+    if (days !== null && days > 0) {
+      extra = `<div class="cust-sub">${days} day${days === 1 ? '' : 's'} overdue</div>`;
+    }
+  }
+  return `<span class="badge ${meta.cls}">${meta.label}</span>${extra}`;
+}
+
+// Shows when the customer was actually contacted, not when the record was
+// created — those differ, and "when did we last chase them" is the thing
+// staff need. Resend counts are only shown for invoices, where the count is
+// tracked deliberately (see recordInvoiceSend in server.js). Payment links
+// increment their counter on generation as well as on send, so their count
+// would overstate how many emails actually went out; better to show nothing
+// than a number that isn't true.
+function sentCellHtml(entry) {
+  const isLink = entry.source === 'link';
+  const sentAt = isLink
+    ? (entry.item.emailSent ? entry.item.lastSentAt : null)
+    : entry.item.sentAt;
+  if (!sentAt) return '<span class="cust-sub">Not sent</span>';
+  const count = isLink ? null : entry.item.sentCount;
+  const times = count && count > 1 ? `<div class="cust-sub">sent ${count}\u00d7</div>` : '';
+  return `<div class="tabular">${fmtDateShort(sentAt)}</div>${times}`;
+}
+
+// Kept as a thin alias so any older callers keep working.
+function entryTabBucket(entry) { return entryStage(entry); }
+
 function computeInvoicesTabCounts() {
-  const counts = { unpaid: 0, sent: 0, pending: 0, paid: 0 };
+  const counts = { not_sent: 0, awaiting: 0, overdue: 0, processing: 0, paid: 0 };
   const all = [
     ...allLinks.map((l) => ({ source: 'link', item: l })),
     ...allInvoices.map((i) => ({ source: 'invoice', item: i })),
@@ -1956,12 +2010,14 @@ function renderCombinedRow(entry) {
           <div class="cust-sub">${escapeHtml(link.jobAddress || '')}</div>
           <div class="cust-sub">${escapeHtml(link.customerEmail || '')}${link.customerPhone ? ' · ' + escapeHtml(link.customerPhone) : ''}</div>
         </td>
-        <td><span class="source-tag">Payment Link</span></td>
-        <td><span class="badge ${link.type}">${typeLabel}</span></td>
-        <td>${fmtMoney(link.amountCents)}</td>
-        <td>${statusBadge}</td>
+        <td>
+          <span class="source-tag">Payment Link</span>
+          <div style="margin-top:5px;"><span class="badge ${link.type}">${typeLabel}</span></div>
+        </td>
+        <td class="tabular">${fmtMoney(link.amountCents)}</td>
+        <td>${stageBadgeHtml(entry)}</td>
+        <td>${sentCellHtml(entry)}</td>
         <td>${linkMondayStatus}</td>
-        <td>${fmtDateShort(link.lastSentAt)}</td>
         <td>
           <div class="row-actions">
             <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
@@ -2015,12 +2071,14 @@ function renderCombinedRow(entry) {
         <div class="cust-sub">${escapeHtml(invoice.customerEmail || '')}${invoice.number ? ' · ' + escapeHtml(invoice.number) : ''}</div>
         ${manualPaidNote}
       </td>
-      <td><span class="source-tag">Invoice</span></td>
-      <td>${typeBadge}</td>
-      <td>${fmtMoney(invoice.totalCents)}</td>
-      <td>${statusBadge}</td>
+      <td>
+        <span class="source-tag">Invoice</span>
+        <div style="margin-top:5px;">${typeBadge}</div>
+      </td>
+      <td class="tabular">${fmtMoney(invoice.totalCents)}</td>
+      <td>${stageBadgeHtml(entry)}</td>
+      <td>${sentCellHtml(entry)}</td>
       <td>${invoiceMondayStatus}</td>
-      <td>${fmtDateShort(invoice.created)}</td>
       <td>
         <div class="row-actions invoice-actions">
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
@@ -2053,12 +2111,11 @@ function renderCombinedTable(container, query) {
       <thead>
         <tr>
           <th>Customer</th>
-          <th>Source</th>
-          <th>Type</th>
+          <th>What</th>
           <th>Amount</th>
-          <th>Status</th>
+          <th>Stage</th>
+          <th>Sent</th>
           <th>Monday Status</th>
-          <th>Date</th>
           <th>Actions</th>
         </tr>
       </thead>
