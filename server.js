@@ -2573,7 +2573,18 @@ function reconcileCandidatesFor(pi, links) {
   // safe to act on — two customers can genuinely owe the same figure — so
   // it comes back as a suggestion for a human to confirm, never an
   // automatic match.
-  return { how: null, matches: fuzzy, suggestions: sameMoney };
+  if (sameMoney.length) return { how: null, matches: fuzzy, suggestions: sameMoney };
+
+  // Still nothing — usually because the payment was PARTIAL, so its amount
+  // matches no link exactly. Fall back to every unpaid link for this email,
+  // whatever the amount. The UI shows both figures side by side so the
+  // person can see the difference before deciding. Without this the payment
+  // is a dead end with nothing to click.
+  if (piEmail) {
+    const sameCustomer = openLinks.filter((l) => (l.customerEmail || '').toLowerCase().trim() === piEmail);
+    if (sameCustomer.length) return { how: null, matches: [], suggestions: sameCustomer };
+  }
+  return { how: null, matches: fuzzy, suggestions: [] };
 }
 
 // Walks every succeeded PaymentIntent that came from checkout.html (they
@@ -2598,7 +2609,7 @@ async function buildReconciliationReport() {
       const { how, matches, suggestions } = reconcileCandidatesFor(pi, links);
       rows.push({
         paymentIntentId: pi.id,
-        amountCents: pi.amount,
+        amountCents: pi.amount, // gross, including any 3% card surcharge
         baseAmountCents: pi.metadata.base_amount_cents ? Number(pi.metadata.base_amount_cents) : null,
         type: pi.metadata.sunatto_payment_type,
         customerName: pi.metadata.customer_name || '',
@@ -2693,11 +2704,14 @@ app.post('/api/reconcile', async (req, res) => {
       const link = links.find((l) => l.id === linkId);
       if (!link) { rejected.push({ ...pick, why: 'Link not found.' }); continue; }
       if (link.paid) { rejected.push({ ...pick, why: 'That link is already marked paid.' }); continue; }
-      // Safety net for hand-picked matches: the money must line up. Stops a
-      // mis-click attaching a $5,300 deposit to a $25,600 balance.
+      // Amounts that don't line up are usually a PARTIAL payment, which is
+      // legitimate — so this no longer blocks. It records the discrepancy on
+      // the record instead of silently pretending the link was paid in full,
+      // and requires the person to have picked this link deliberately.
       const expected = row.baseAmountCents || row.amountCents;
-      if (link.amountCents !== expected) {
-        rejected.push({ ...pick, why: `Amount mismatch — payment is ${(expected / 100).toFixed(2)}, link is ${(link.amountCents / 100).toFixed(2)}.` });
+      const shortfall = link.amountCents - expected;
+      if (shortfall !== 0 && !pick.linkId) {
+        rejected.push({ ...pick, why: `Amount mismatch — payment is ${(expected / 100).toFixed(2)}, link is ${(link.amountCents / 100).toFixed(2)}. Pick this link explicitly to record it as a partial payment.` });
         continue;
       }
       {
@@ -2707,6 +2721,11 @@ app.post('/api/reconcile', async (req, res) => {
       link.reconciledAt = new Date().toISOString();
       link.reconciledBy = fullNameOf(user);
       link.reconciledHow = pick.linkId ? 'approved_by_hand' : row.matchedBy;
+      if (shortfall !== 0) {
+        link.paidAmountCents = expected;
+        link.shortfallCents = shortfall;
+        link.partialNote = `Payment was ${(expected / 100).toFixed(2)} against a link for ${(link.amountCents / 100).toFixed(2)} — ${(Math.abs(shortfall) / 100).toFixed(2)} ${shortfall > 0 ? 'short' : 'over'}.`;
+      }
       applied.push({ linkId: link.id, name: link.customerName, amountCents: link.amountCents, matchedBy: link.reconciledHow });
       }
     }
