@@ -938,6 +938,12 @@ tbody tr:last-child td { border-bottom: none; }
 .badge.open { background: var(--gold-light); color: var(--brand-ink); }
 .badge.processing { background: var(--blue-light); color: var(--info-ink); }
 .badge.void, .badge.uncollectible { background: var(--red-light); color: var(--destructive); }
+/* Lifecycle stages (see entryStage in hub.js). Overdue is the only one
+   allowed to be loud — it's the chase list. */
+.badge.notsent { background: var(--surface-2); color: var(--muted-foreground); }
+.badge.awaiting { background: var(--gold-light); color: var(--brand-ink); }
+.badge.overdue { background: var(--red-light); color: var(--destructive); }
+
 .badge.admin { background: var(--gold-light); color: var(--brand-ink); }
 .badge.staff { background: var(--surface-2); color: var(--muted-foreground); }
 
