@@ -1533,7 +1533,14 @@ const reconcileButton = document.getElementById('reconcile-button');
 const reconcilePanel = document.getElementById('reconcile-panel');
 
 function reconcileRowHtml(r, i) {
-  const amt = fmtMoney(r.baseAmountCents || r.amountCents);
+  // Stripe shows the gross charge; only the base pays down the job. Showing
+  // one without the other is what made $6,180 look like $6,000 had gone
+  // missing, so show both whenever the surcharge made them differ.
+  const gross = r.amountCents;
+  const base = r.baseAmountCents || r.amountCents;
+  const amt = base === gross
+    ? fmtMoney(base)
+    : `${fmtMoney(gross)} charged · ${fmtMoney(base)} toward the balance`;
   const kind = r.type === 'deposit' ? '20% Deposit' : r.type === 'balance' ? '80% Balance' : 'Custom';
   const when = r.paidAt ? fmtDateShort(r.paidAt) : '';
   const confident = r.outcome === 'will_mark_paid';
@@ -1547,7 +1554,7 @@ function reconcileRowHtml(r, i) {
         ? 'Matched on the email address the link was sent to, plus the same amount and milestone.'
         : 'Matched on customer name and job address, plus the same amount and milestone.')
     : (r.suggestions && r.suggestions.length
-        ? 'Nothing identified this payment for certain. The link(s) below owe the same amount for the same milestone — confirm which one, if any.'
+        ? 'Nothing identified this payment for certain. Check the link(s) below and confirm which one it belongs to — if the amounts differ it will be recorded as a partial payment.'
         : 'No unpaid link matches this amount and milestone. It may already be recorded, or belong to a job not in the hub.');
 
   const paidWhat = `
@@ -1571,7 +1578,7 @@ function reconcileRowHtml(r, i) {
         <span>
           <span class="cust-name">${escapeHtml(sg.name || '(no name)')}</span>
           <span class="cust-sub">${escapeHtml(sg.email || '')}${sg.address ? ' · ' + escapeHtml(sg.address) : ''}</span>
-          <span class="cust-sub">${fmtMoney(sg.amountCents)}</span>
+          <span class="cust-sub">Link is for ${fmtMoney(sg.amountCents)}${sg.amountCents !== base ? ' — ' + fmtMoney(Math.abs(sg.amountCents - base)) + (sg.amountCents > base ? ' short of this link' : ' more than this link') : ' — exact match'}</span>
         </span>
       </label>`).join('');
     target = `<div class="cust-sub" style="margin-top:8px;"><strong>Possible links:</strong></div>${opts}`;
