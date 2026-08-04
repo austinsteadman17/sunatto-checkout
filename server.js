@@ -2628,7 +2628,7 @@ app.post('/api/switch-method', async (req, res) => {
       let messageId = null;
       if (sendEmail) {
         if (!customerEmail) {
-          return res.status(400).json({ error: 'No email on file for this customer — switch created no link. Use "give me the link" instead.' });
+          return res.status(400).json({ error: 'No email on file for this customer — switch created no link. Use "In person" instead.' });
         }
         const { subject, textBody, htmlBody } = buildHomeownerEmail({
           customerName,
