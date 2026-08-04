@@ -1170,6 +1170,12 @@ async function recordGenLinkIfNeeded() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         id: currentGenLinkRef(),
+        // The Monday item this link is being raised against. Recorded at
+        // creation so the payment can be attributed to a job by id rather
+        // than by matching the name and address a homeowner typed in
+        // themselves — the guesswork that left Bonnie Canesso's $5,300
+        // sitting as "Awaiting" for a week after it had cleared.
+        mondayItemId: selectedJob ? String(selectedJob.id) : '',
         customerName: selectedJob ? selectedJob.name : '',
         customerEmail: genEmailField.value.trim(),
         customerPhone: genPhoneField.value.trim(),
