@@ -1113,12 +1113,31 @@ genTotalCostField.addEventListener('input', recomputeGen);
 genCustomAmountField.addEventListener('input', recomputeGen);
 genEmailField.addEventListener('input', recomputeGen);
 
+// One id per generated link, minted here so the SAME id goes into both the
+// checkout URL (as ?ref=) and the stored record. checkout.js hands it back on
+// the PaymentIntent, which is what lets a payment be tied to its link exactly
+// instead of guessed from a name and address the homeowner typed themselves.
+//
+// Keyed on the same fingerprint recordGenLinkIfNeeded uses, so changing the
+// job/type/amount mints a fresh id at the same moment a fresh record is
+// created — otherwise the URL and the record would drift apart.
+let genLinkRef = null;
+let genLinkRefFingerprint = null;
+function currentGenLinkRef() {
+  const fp = genFingerprint();
+  if (genLinkRef && genLinkRefFingerprint === fp) return genLinkRef;
+  genLinkRef = crypto.randomUUID();
+  genLinkRefFingerprint = fp;
+  return genLinkRef;
+}
+
 function buildGenCheckoutUrl() {
   const cents = currentGenAmountCents();
   const dollars = (cents / 100).toFixed(2);
   const out = new URLSearchParams();
   out.set('type', genType);
   out.set('amount', dollars);
+  out.set('ref', currentGenLinkRef());
   if (selectedJob && selectedJob.name) out.set('name', selectedJob.name);
   if (genEmailField.value.trim()) out.set('email', genEmailField.value.trim());
   if (genPhoneField.value.trim()) out.set('phone', genPhoneField.value.trim());
@@ -1150,6 +1169,7 @@ async function recordGenLinkIfNeeded() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        id: currentGenLinkRef(),
         customerName: selectedJob ? selectedJob.name : '',
         customerEmail: genEmailField.value.trim(),
         customerPhone: genPhoneField.value.trim(),
@@ -1492,6 +1512,106 @@ function showSwitchDeliveryModal(who) {
       cleanup(a === 'cancel' ? null : a);
     });
     document.addEventListener('keydown', onKey);
+  });
+}
+
+// --- Reconcile payments ---------------------------------------------------
+//
+// Payment links used to be matched to their payments by customer name and
+// job address. Homeowners type those themselves at checkout, so a job the
+// board calls "Steve Canesso, 4040 Azalea Wy, TX" could arrive as "Bonnie Lee
+// Canesso, 4040 Azalea Trail, Texas" — nothing matched, and the hub kept
+// showing money as owed that was already collected.
+//
+// New links carry their own id through the checkout URL so this can't recur.
+// This tool cleans up everything from before that, and stays useful as a
+// periodic "does the hub agree with Stripe?" check.
+//
+// Deliberately two steps: it shows exactly what it will change first, and
+// only touches records the caller then confirms.
+const reconcileButton = document.getElementById('reconcile-button');
+const reconcilePanel = document.getElementById('reconcile-panel');
+
+function renderReconcilePreview(data) {
+  const s = data.summary;
+  const money = fmtMoney(s.willMarkPaidCents);
+  const rows = data.rows.map((r) => {
+    const who = escapeHtml(r.customerName || r.customerEmail || r.paymentIntentId);
+    const amt = fmtMoney(r.baseAmountCents || r.amountCents);
+    if (r.outcome === 'will_mark_paid') {
+      return `<div class="cust-sub">✓ <strong>${who}</strong> — ${amt} — matches “${escapeHtml(r.linkName || '')}” (by ${escapeHtml(r.matchedBy)})</div>`;
+    }
+    const hint = (r.suggestions && r.suggestions.length === 1)
+      ? ` — possibly “${escapeHtml(r.suggestions[0].name || '')}”, needs a human`
+      : (r.suggestions && r.suggestions.length > 1 ? ` — ${r.suggestions.length} possible links, needs a human` : ' — no matching link found');
+    return `<div class="cust-sub">• <strong>${who}</strong> — ${amt}${hint}</div>`;
+  }).join('');
+
+  reconcilePanel.style.display = 'block';
+  reconcilePanel.innerHTML = `
+    <label class="field-label">Reconciliation</label>
+    <p class="cust-sub" style="margin-bottom:10px;">
+      ${s.unreconciled} succeeded payment(s) in Stripe aren't reflected in the hub.
+      ${s.willMarkPaid} can be matched with confidence (${money}).
+      ${s.ambiguous + s.noMatch} need a person to look.
+    </p>
+    ${rows}
+    <div class="panel-actions">
+      ${s.willMarkPaid ? '<button type="button" class="primary" id="reconcile-apply">Mark ' + s.willMarkPaid + ' as paid</button>' : ''}
+      <button type="button" class="secondary" id="reconcile-dismiss">Close</button>
+    </div>`;
+
+  const applyBtn = document.getElementById('reconcile-apply');
+  if (applyBtn) applyBtn.addEventListener('click', applyReconcile);
+  document.getElementById('reconcile-dismiss').addEventListener('click', () => {
+    reconcilePanel.style.display = 'none';
+  });
+}
+
+async function applyReconcile() {
+  const btn = document.getElementById('reconcile-apply');
+  btn.textContent = 'Applying…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/reconcile', {
+      method: 'POST',
+      headers: { 'X-Hub-Session': getSessionToken() },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not apply the reconciliation.');
+    reconcilePanel.innerHTML = `
+      <label class="field-label">Reconciliation</label>
+      <p class="cust-sub">Marked ${data.appliedCount} payment link(s) paid.
+      ${data.stillUnresolved.length} still need a person to look at them.</p>`;
+    await loadAndRender();
+  } catch (err) {
+    btn.textContent = 'Retry';
+    btn.disabled = false;
+    await showConfirmModal({ title: 'Reconcile failed', message: err.message, confirmLabel: 'OK', danger: true });
+  }
+}
+
+if (reconcileButton) {
+  reconcileButton.addEventListener('click', async () => {
+    const original = reconcileButton.textContent;
+    reconcileButton.textContent = 'Checking…';
+    reconcileButton.disabled = true;
+    try {
+      const res = await fetch('/api/reconcile', { headers: { 'X-Hub-Session': getSessionToken() } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not check payments.');
+      if (!data.rows.length) {
+        reconcilePanel.style.display = 'block';
+        reconcilePanel.innerHTML = '<label class="field-label">Reconciliation</label><p class="cust-sub">Every succeeded Stripe payment is already reflected in the hub.</p>';
+      } else {
+        renderReconcilePreview(data);
+      }
+    } catch (err) {
+      await showConfirmModal({ title: 'Reconcile failed', message: err.message, confirmLabel: 'OK', danger: true });
+    } finally {
+      reconcileButton.textContent = original;
+      reconcileButton.disabled = false;
+    }
   });
 }
 
