@@ -1403,7 +1403,8 @@ ciSubmitButton.addEventListener('click', async () => {
 // Going to a link offers two deliveries, because reps are often on the phone
 // with the card already in hand:
 //   "Email it"     — Postmark it to the homeowner to fill in themselves.
-//   "Give me link" — nothing is emailed; the rep opens it and keys the card in.
+//   "In person"    — nothing is emailed; the checkout page opens on our end so
+//                    the rep can take the card details there and then.
 async function switchPaymentMethod(btn) {
   const source = btn.getAttribute('data-source');
   const id = btn.getAttribute('data-id');
@@ -1470,7 +1471,7 @@ function showSwitchDeliveryModal(who) {
         </p>
         <div class="modal-actions">
           <button type="button" class="secondary" data-act="cancel">Cancel</button>
-          <button type="button" class="secondary" data-act="manual">Give me the link</button>
+          <button type="button" class="secondary" data-act="manual">In person</button>
           <button type="button" class="icon-btn primary-action" data-act="email">Email it</button>
         </div>
       </div>`;
