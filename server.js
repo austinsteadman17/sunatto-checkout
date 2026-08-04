@@ -66,6 +66,7 @@ app.post('/api/create-intent', async (req, res) => {
       customerPhone,
       jobAddress,
       description,
+      linkId,
     } = req.body;
 
     if (!amountCents || amountCents <= 0) {
@@ -109,6 +110,11 @@ app.post('/api/create-intent', async (req, res) => {
           customer_name: customerName || '',
           customer_phone: customerPhone || '',
           job_address: jobAddress || '',
+          // The hub link record this payment belongs to, carried through the
+          // checkout URL. This is what lets findAndMarkLinkPaid match exactly
+          // instead of guessing from a name and address the homeowner typed
+          // themselves — see section 7a6 for why that guessing failed.
+          sunatto_link_id: linkId || '',
         },
       },
       PREVIEW_VERSION
@@ -1097,7 +1103,12 @@ app.post('/api/links', async (req, res) => {
 
     const now = new Date().toISOString();
     const record = {
-      id: crypto.randomUUID(),
+      // The caller generates this so it can embed the same id in the checkout
+      // URL before the link is ever sent. Falls back to a fresh one for older
+      // callers that don't supply it.
+      id: (typeof req.body.id === 'string' && /^[0-9a-f-]{36}$/i.test(req.body.id))
+        ? req.body.id
+        : crypto.randomUUID(),
       customerName: customerName || '',
       customerEmail: customerEmail || '',
       customerPhone: customerPhone || '',
@@ -1308,23 +1319,20 @@ async function findAndMarkLinkPaid(paymentIntent) {
   const jobAddress = paymentIntent.metadata && paymentIntent.metadata.job_address;
   const baseAmountCents = paymentIntent.metadata && Number(paymentIntent.metadata.base_amount_cents);
 
-  if (!type || !customerName || !jobAddress || !baseAmountCents) {
-    console.warn('Payment-links hub: PaymentIntent missing metadata needed to match, skipping.');
+  // Name/address are no longer required — an exact link-id match doesn't need
+  // them, and demanding them is what made this bail out on the very payments
+  // it should have caught.
+  if (!type || !baseAmountCents) {
+    console.warn('Payment-links hub: PaymentIntent missing type/amount metadata, skipping.');
     return;
   }
 
-  const targetName = normalizeForMatch(customerName);
-  const targetAddress = normalizeAddressForMatch(jobAddress);
-
+  // Uses the same match ladder as the reconciler (section 7a6): exact link
+  // id first, then email, then the old fuzzy name+address. Keeping one
+  // implementation means a payment that reconcile would catch is a payment
+  // this catches live.
   const links = await loadLinks();
-  const candidates = links.filter((l) => {
-    if (l.paid || l.type !== type || l.amountCents !== baseAmountCents) return false;
-    const linkName = normalizeForMatch(l.customerName);
-    const linkAddress = normalizeAddressForMatch(l.jobAddress);
-    return linkName && linkAddress
-      && (linkName.includes(targetName) || targetName.includes(linkName))
-      && (linkAddress.includes(targetAddress) || targetAddress.includes(linkAddress));
-  });
+  const { matches: candidates } = reconcileCandidatesFor(paymentIntent, links);
 
   if (candidates.length !== 1) {
     console.warn(
@@ -2476,6 +2484,222 @@ app.post('/api/custom-invoice', async (req, res) => {
     });
   } catch (err) {
     console.error('custom-invoice error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 7a6. Payment reconciliation — find money Stripe took that the hub missed.
+//
+// Payment links are marked paid by findAndMarkLinkPaid, which matched on
+// customer name + job address. That turned out to be too fragile: the
+// homeowner types their own name and address at checkout, so a job the
+// board calls "Steve Canesso, 4040 Azalea Wy, TX" can arrive as
+// "Bonnie Lee Canesso, 4040 Azalea Trail, Texas". Nothing matched, the
+// payment was silently skipped, and the hub kept showing the link unpaid
+// while the cash was already in the bank.
+//
+// Two defences, in order of reliability:
+//   1. sunatto_link_id — the link record's own id, carried through the
+//      checkout URL into PaymentIntent metadata. Exact, no guessing. Only
+//      present on links generated after this shipped.
+//   2. email + amount + type — for older links with no id. A homeowner may
+//      mistype their street, but the email is the one we sent the link to.
+//   3. the original fuzzy name+address match, kept as a last resort.
+//
+// A match is only ever applied when exactly ONE unpaid link fits. Anything
+// ambiguous is reported for a human rather than guessed at.
+// ---------------------------------------------------------------------
+
+function reconcileCandidatesFor(pi, links) {
+  const type = pi.metadata && pi.metadata.sunatto_payment_type;
+  const baseAmountCents = pi.metadata && Number(pi.metadata.base_amount_cents);
+  const linkId = pi.metadata && pi.metadata.sunatto_link_id;
+  const piEmail = (
+    (pi.customer && pi.customer.email) ||
+    pi.receipt_email ||
+    ''
+  ).toLowerCase().trim();
+
+  const openLinks = links.filter((l) => !l.paid && !l.voided);
+
+  // 1. Exact id match.
+  if (linkId) {
+    const exact = openLinks.filter((l) => l.id === linkId);
+    if (exact.length === 1) return { how: 'link_id', matches: exact };
+  }
+
+  // Everything below still requires the money to line up, so a mismatched
+  // amount can never be reconciled onto the wrong milestone.
+  const sameMoney = openLinks.filter((l) => l.type === type && l.amountCents === baseAmountCents);
+
+  // 2. Email.
+  if (piEmail) {
+    const byEmail = sameMoney.filter((l) => (l.customerEmail || '').toLowerCase().trim() === piEmail);
+    if (byEmail.length === 1) return { how: 'email', matches: byEmail };
+    // More than one link with the same email, amount and milestone. Refuse to
+    // pick, but hand back the candidates so a person can.
+    if (byEmail.length > 1) return { how: null, matches: byEmail, suggestions: byEmail };
+  }
+
+  // 3. Original fuzzy name + address.
+  const targetName = normalizeForMatch(pi.metadata && pi.metadata.customer_name);
+  const targetAddress = normalizeAddressForMatch(pi.metadata && pi.metadata.job_address);
+  const fuzzy = sameMoney.filter((l) => {
+    const n = normalizeForMatch(l.customerName);
+    const a = normalizeAddressForMatch(l.jobAddress);
+    return n && a && targetName && targetAddress
+      && (n.includes(targetName) || targetName.includes(n))
+      && (a.includes(targetAddress) || targetAddress.includes(a));
+  });
+  if (fuzzy.length === 1) return { how: 'name_address', matches: fuzzy };
+
+  // Nothing identified it. Amount + milestone alone is suggestive but NOT
+  // safe to act on — two customers can genuinely owe the same figure — so
+  // it comes back as a suggestion for a human to confirm, never an
+  // automatic match.
+  return { how: null, matches: fuzzy, suggestions: sameMoney };
+}
+
+// Walks every succeeded PaymentIntent that came from checkout.html (they
+// all carry sunatto_payment_type; invoice payments don't and don't need
+// this — their status comes straight from Stripe).
+async function buildReconciliationReport() {
+  const links = await loadLinks();
+  const alreadyClaimed = new Set(links.filter((l) => l.paymentIntentId).map((l) => l.paymentIntentId));
+
+  const rows = [];
+  let page = 0;
+  let startingAfter;
+  while (page < 10) {
+    const params = { limit: 100, expand: ['data.customer'] };
+    if (startingAfter) params.starting_after = startingAfter;
+    const batch = await stripe.paymentIntents.list(params);
+    for (const pi of batch.data) {
+      if (pi.status !== 'succeeded') continue;
+      if (!pi.metadata || !pi.metadata.sunatto_payment_type) continue; // invoice payment
+      if (alreadyClaimed.has(pi.id)) continue;                          // already reconciled
+
+      const { how, matches, suggestions } = reconcileCandidatesFor(pi, links);
+      rows.push({
+        paymentIntentId: pi.id,
+        amountCents: pi.amount,
+        baseAmountCents: pi.metadata.base_amount_cents ? Number(pi.metadata.base_amount_cents) : null,
+        type: pi.metadata.sunatto_payment_type,
+        customerName: pi.metadata.customer_name || '',
+        customerEmail: (pi.customer && pi.customer.email) || pi.receipt_email || '',
+        jobAddress: pi.metadata.job_address || '',
+        paidAt: pi.created ? new Date(pi.created * 1000).toISOString() : null,
+        matchedBy: matches.length === 1 ? how : null,
+        outcome: matches.length === 1 ? 'will_mark_paid' : (matches.length === 0 ? 'no_match' : 'ambiguous'),
+        candidateCount: matches.length,
+        linkId: matches.length === 1 ? matches[0].id : null,
+        linkName: matches.length === 1 ? matches[0].customerName : null,
+        // Same amount + milestone, but nothing confirmed the identity. Shown
+        // so staff can eyeball it and use Mark Paid, rather than the tool
+        // silently deciding.
+        suggestions: (suggestions || []).map((l) => ({
+          id: l.id,
+          name: l.customerName,
+          email: l.customerEmail,
+          address: l.jobAddress,
+          amountCents: l.amountCents,
+        })),
+      });
+    }
+    if (!batch.has_more) break;
+    startingAfter = batch.data[batch.data.length - 1].id;
+    page++;
+  }
+  return { links, rows };
+}
+
+// Dry run — shows exactly what would change and why. Admin-only because it
+// exposes every payment on the account, not just the caller's own jobs.
+app.get('/api/reconcile', async (req, res) => {
+  const user = await requireAdmin(req, res);
+  if (!user) return;
+  try {
+    const { rows } = await buildReconciliationReport();
+    const willFix = rows.filter((r) => r.outcome === 'will_mark_paid');
+    res.json({
+      rows,
+      summary: {
+        unreconciled: rows.length,
+        willMarkPaid: willFix.length,
+        willMarkPaidCents: willFix.reduce((sum, r) => sum + (r.baseAmountCents || r.amountCents), 0),
+        ambiguous: rows.filter((r) => r.outcome === 'ambiguous').length,
+        noMatch: rows.filter((r) => r.outcome === 'no_match').length,
+      },
+    });
+  } catch (err) {
+    console.error('reconcile preview error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Applies only the unambiguous matches. Ambiguous / unmatched payments are
+// left alone and returned so a human can deal with them.
+app.post('/api/reconcile', async (req, res) => {
+  const user = await requireAdmin(req, res);
+  if (!user) return;
+  try {
+    const { links, rows } = await buildReconciliationReport();
+    const applied = [];
+    for (const row of rows) {
+      if (row.outcome !== 'will_mark_paid') continue;
+      const link = links.find((l) => l.id === row.linkId);
+      if (!link || link.paid) continue;
+      link.paid = true;
+      link.paidAt = row.paidAt || new Date().toISOString();
+      link.paymentIntentId = row.paymentIntentId;
+      link.reconciledAt = new Date().toISOString();
+      link.reconciledBy = fullNameOf(user);
+      link.reconciledHow = row.matchedBy;
+      applied.push({ linkId: link.id, name: link.customerName, amountCents: link.amountCents, matchedBy: row.matchedBy });
+    }
+    if (applied.length) await saveLinks(links);
+    console.log(`Reconcile: ${fullNameOf(user)} marked ${applied.length} link(s) paid.`);
+    res.json({
+      ok: true,
+      applied,
+      appliedCount: applied.length,
+      stillUnresolved: rows.filter((r) => r.outcome !== 'will_mark_paid'),
+    });
+  } catch (err) {
+    console.error('reconcile apply error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual override for a payment link, mirroring the invoice equivalent —
+// needed because until now there was literally no way to correct a link the
+// matcher got wrong.
+app.post('/api/links/:id/mark-paid', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const admin = isUserAdmin(user);
+    const links = await loadLinks();
+    const jobs = await getUserAttachedJobs(fullNameOf(user), { isAdmin: admin });
+    const normalizedJobs = jobs.map((j) => ({
+      name: normalizeForMatch(j.name),
+      address: normalizeAddressForMatch(j.address),
+    }));
+    const record = links.find((l) => l.id === req.params.id);
+    if (!record || (!admin && !linkMatchesJobs(record, normalizedJobs))) {
+      return res.status(404).json({ error: 'Link not found.' });
+    }
+    if (record.paid) return res.status(409).json({ error: 'Already marked paid.' });
+
+    record.paid = true;
+    record.paidAt = new Date().toISOString();
+    record.manualPaidBy = fullNameOf(user);
+    record.manualPaidNote = (req.body && req.body.note) || '';
+    await saveLinks(links);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('link mark-paid error:', err);
     res.status(500).json({ error: err.message });
   }
 });
