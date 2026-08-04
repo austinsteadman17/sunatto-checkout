@@ -1393,6 +1393,107 @@ ciSubmitButton.addEventListener('click', async () => {
   }
 });
 
+// --- Switch payment method ------------------------------------------------
+//
+// Invoices are bank-only on this Stripe account and can't carry the 3%
+// credit-card surcharge; payment links offer both and do surcharge properly.
+// So "customer wants to pay the other way" is a real operation, not a label
+// change: it voids the obsolete request and issues the correct one.
+//
+// Going to a link offers two deliveries, because reps are often on the phone
+// with the card already in hand:
+//   "Email it"     — Postmark it to the homeowner to fill in themselves.
+//   "Give me link" — nothing is emailed; the rep opens it and keys the card in.
+async function switchPaymentMethod(btn) {
+  const source = btn.getAttribute('data-source');
+  const id = btn.getAttribute('data-id');
+  const who = btn.getAttribute('data-name') || 'this customer';
+  const toLink = source === 'invoice';
+
+  let deliver = 'email';
+  if (toLink) {
+    const choice = await showSwitchDeliveryModal(who);
+    if (!choice) return;
+    deliver = choice;
+  } else {
+    const ok = await showConfirmModal({
+      title: 'Switch to an invoice?',
+      message: `This voids the payment link for ${who} and emails them a proper invoice instead. The old link stops working immediately.`,
+      confirmLabel: 'Switch to Invoice',
+    });
+    if (!ok) return;
+  }
+
+  const original = btn.textContent;
+  btn.textContent = 'Switching…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/switch-method', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ source, id, deliver }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not switch the payment method.');
+
+    if (data.to === 'link' && deliver === 'manual' && data.checkoutUrl) {
+      window.open(data.checkoutUrl, '_blank', 'noopener');
+    }
+    await loadAndRender();
+  } catch (err) {
+    btn.textContent = original;
+    btn.disabled = false;
+    await showConfirmModal({
+      title: 'Switch failed',
+      message: err.message,
+      confirmLabel: 'OK',
+      danger: true,
+    });
+  }
+}
+
+// Two real choices plus cancel, so it can't reuse the yes/no confirm modal.
+function showSwitchDeliveryModal(who) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><path d="M2 10h20"></path></svg>
+        </div>
+        <div class="modal-title">Switch to a payment link?</div>
+        <p class="modal-message">
+          This voids the invoice for ${escapeHtml(who)} and creates a card-enabled payment link
+          for the same milestone. Credit card payments will include the 3% surcharge.
+          How should it reach them?
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" data-act="cancel">Cancel</button>
+          <button type="button" class="secondary" data-act="manual">Give me the link</button>
+          <button type="button" class="icon-btn primary-action" data-act="email">Email it</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.style.display = 'flex';
+
+    function cleanup(result) {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    }
+    function onKey(e) { if (e.key === 'Escape') cleanup(null); }
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) return cleanup(null);
+      const act = e.target.closest('[data-act]');
+      if (!act) return;
+      const a = act.getAttribute('data-act');
+      cleanup(a === 'cancel' ? null : a);
+    });
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 // --- Light / dark theme toggle -------------------------------------------
 //
 // sunatto.css reads a data-theme attribute on <html>. With nothing set it
@@ -1888,8 +1989,8 @@ function combinedSearchResults(query) {
 //
 // Invoices carry a real due date from Stripe. Payment links don't have one
 // at all, so "overdue" for a link is our own chase threshold rather than a
-// contractual date — hence the named constant below rather than a magic 7.
-const LINK_OVERDUE_DAYS = 7;
+// contractual date — hence the named constant below rather than a magic number.
+const LINK_OVERDUE_DAYS = 3;
 
 const STAGE_META = {
   not_sent:   { label: 'Not Sent',   cls: 'notsent' },
@@ -1920,17 +2021,26 @@ function entryStage(entry) {
   return 'awaiting';
 }
 
+// Invoices carry a real Stripe due date. Links don't, so their effective
+// due date is derived: emailed date + LINK_OVERDUE_DAYS. Both are shown as
+// a concrete date so nobody has to work out "is this past due?" in their head.
+function entryDueDate(entry) {
+  if (entry.source === 'invoice') return entry.item.dueDate || null;
+  if (!entry.item.emailSent || !entry.item.lastSentAt) return null;
+  return new Date(new Date(entry.item.lastSentAt).getTime() + LINK_OVERDUE_DAYS * 86400000).toISOString();
+}
+
 function stageBadgeHtml(entry) {
   const stage = entryStage(entry);
   const meta = STAGE_META[stage];
+  const due = entryDueDate(entry);
   let extra = '';
   if (stage === 'overdue') {
-    const days = entry.source === 'invoice'
-      ? daysSince(entry.item.dueDate)
-      : daysSince(entry.item.lastSentAt) - LINK_OVERDUE_DAYS;
-    if (days !== null && days > 0) {
-      extra = `<div class="cust-sub">${days} day${days === 1 ? '' : 's'} overdue</div>`;
-    }
+    const days = daysSince(due);
+    const dayText = days !== null && days > 0 ? `${days} day${days === 1 ? '' : 's'} past due` : 'Past due';
+    extra = `<div class="cust-sub">${dayText}${due ? ' · due ' + fmtDateShort(due) : ''}</div>`;
+  } else if (stage === 'awaiting' && due) {
+    extra = `<div class="cust-sub">Due ${fmtDateShort(due)}</div>`;
   }
   return `<span class="badge ${meta.cls}">${meta.label}</span>${extra}`;
 }
@@ -2022,6 +2132,7 @@ function renderCombinedRow(entry) {
           <div class="row-actions">
             <button type="button" class="secondary copy-btn" data-url="${escapeHtml(link.checkoutUrl)}">Copy Link</button>
             <button type="button" class="secondary resend-btn" data-id="${link.id}" ${canResend ? '' : 'disabled title="No email on file"'}>Resend</button>
+            <button type="button" class="secondary switch-btn" data-id="${link.id}" data-source="link" data-name="${escapeHtml(link.customerName || 'this customer')}" ${link.paid ? 'disabled' : ''} title="Customer would rather pay by bank — void this link and send a proper invoice instead">Switch to Invoice</button>
             ${currentIsAdmin ? `<button type="button" class="secondary void-btn" data-id="${link.id}" data-name="${escapeHtml(link.customerName || 'this link')}" title="Remove a stale/incorrect link from the hub">Void</button>` : ''}
           </div>
         </td>
@@ -2059,6 +2170,9 @@ function renderCombinedRow(entry) {
   // cash, another processor). Never while a real Stripe payment is
   // already processing — that should be left to land on its own.
   const showMarkPaid = (invoice.status === 'draft' || invoice.status === 'open') && !invoice.paymentProcessing;
+  // Switching to a payment link means voiding this invoice, so it's offered
+  // on the same terms as Void: never once money is already moving.
+  const showSwitch = (invoice.status === 'draft' || invoice.status === 'open') && !invoice.paymentProcessing;
   const manualPaidNote = invoice.manualPaidMethodLabel
     ? `<div class="cust-sub">Paid via ${escapeHtml(invoice.manualPaidMethodLabel)}${invoice.manualPaidNote ? ' — ' + escapeHtml(invoice.manualPaidNote) : ''}</div>`
     : '';
@@ -2084,6 +2198,7 @@ function renderCombinedRow(entry) {
           ${hostedUrl ? `<a class="icon-link-btn" href="${escapeHtml(hostedUrl)}" target="_blank" rel="noopener" title="View invoice"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></a>` : ''}
           ${editUrl ? `<a class="icon-link-btn" href="${escapeHtml(editUrl)}" target="_blank" rel="noopener" title="Edit in Stripe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>` : ''}
           <button type="button" class="secondary send-invoice-btn" data-id="${invoice.id}" ${canSend ? '' : 'disabled'} ${sendTitle ? `title="${escapeHtml(sendTitle)}"` : ''}>${sendLabel}</button>
+          ${showSwitch ? `<button type="button" class="secondary switch-btn" data-id="${invoice.id}" data-source="invoice" data-name="${escapeHtml(invoice.customerName || 'this customer')}" title="Customer wants to pay by card — void this invoice and issue a payment link (invoices are bank-only and carry no surcharge)">Switch to Card</button>` : ''}
           ${showMarkPaid ? `<button type="button" class="secondary mark-paid-invoice-btn" data-id="${invoice.id}" data-name="${escapeHtml(invoice.customerName || 'this invoice')}" title="Manually mark this invoice paid — check, cash, or another payment processor">Mark Paid</button>` : ''}
           ${showDelete ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
           ${showVoid ? `<button type="button" class="secondary void-invoice-btn" data-id="${invoice.id}" title="Void this invoice in Stripe and the hub (e.g. customer is paying another way)">Void</button>` : ''}
@@ -2125,6 +2240,7 @@ function renderCombinedTable(container, query) {
 
   container.querySelectorAll('.copy-btn').forEach((btn) => btn.addEventListener('click', () => copyLink(btn)));
   container.querySelectorAll('.resend-btn').forEach((btn) => btn.addEventListener('click', () => resendLink(btn)));
+  container.querySelectorAll('.switch-btn').forEach((btn) => btn.addEventListener('click', () => switchPaymentMethod(btn)));
   container.querySelectorAll('.void-btn').forEach((btn) => btn.addEventListener('click', () => voidLink(btn)));
   container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
   container.querySelectorAll('.delete-invoice-btn').forEach((btn) => btn.addEventListener('click', () => deleteInvoiceDraft(btn)));
