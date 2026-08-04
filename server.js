@@ -93,6 +93,24 @@ app.post('/api/create-intent', async (req, res) => {
       await stripe.customers.update(customer.id, { phone: customerPhone });
     }
 
+    // Resolve which Monday job this payment belongs to, server-side, from the
+    // link record the checkout page was opened against. Deliberately NOT taken
+    // from the request body: the homeowner's browser is the caller here, and a
+    // job id is not something a homeowner should be able to assert. If the ref
+    // is missing or unknown (an older link, or a bare checkout URL), this stays
+    // blank and the payment simply lands untagged rather than mis-tagged.
+    let resolvedMondayItemId = '';
+    if (linkId) {
+      try {
+        const known = await loadLinks();
+        const rec = known.find((l) => l.id === linkId);
+        if (rec && rec.mondayItemId) resolvedMondayItemId = String(rec.mondayItemId);
+      } catch (lookupErr) {
+        // Never let a tagging lookup stop someone from paying.
+        console.warn('create-intent: could not resolve Monday item for link', linkId, lookupErr.message);
+      }
+    }
+
     const paymentIntent = await stripe.paymentIntents.create(
       {
         amount: amountCents,
@@ -115,6 +133,13 @@ app.post('/api/create-intent', async (req, res) => {
           // instead of guessing from a name and address the homeowner typed
           // themselves — see section 7a6 for why that guessing failed.
           sunatto_link_id: linkId || '',
+          // The job, and which slice of it this is. These two are what let a
+          // job be totalled without inference: group every payment by
+          // monday_item_id, sum base_amount_cents, compare to the board's
+          // Total Cost. Stripe has no concept of "20% of a $18,500 job", so
+          // this is the hub putting that concept where the money lives.
+          monday_item_id: resolvedMondayItemId,
+          sunatto_milestone: type,
         },
       },
       PREVIEW_VERSION
@@ -1113,6 +1138,14 @@ app.post('/api/links', async (req, res) => {
       customerEmail: customerEmail || '',
       customerPhone: customerPhone || '',
       jobAddress: jobAddress || '',
+      // Which Monday job this link was raised against. Supplied by the hub's
+      // Generate flow, where a job is picked from a list, so it's an id we
+      // were given rather than one we inferred. Everything downstream
+      // (attributing the payment, totalling a job) keys off this instead of
+      // matching names and addresses after the fact.
+      mondayItemId: (req.body.mondayItemId != null && req.body.mondayItemId !== '')
+        ? String(req.body.mondayItemId)
+        : '',
       type,
       amountCents: Math.round(parseFloat(amount || '0') * 100),
       checkoutUrl,
