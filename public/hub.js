@@ -1532,62 +1532,129 @@ function showSwitchDeliveryModal(who) {
 const reconcileButton = document.getElementById('reconcile-button');
 const reconcilePanel = document.getElementById('reconcile-panel');
 
+function reconcileRowHtml(r, i) {
+  const amt = fmtMoney(r.baseAmountCents || r.amountCents);
+  const kind = r.type === 'deposit' ? '20% Deposit' : r.type === 'balance' ? '80% Balance' : 'Custom';
+  const when = r.paidAt ? fmtDateShort(r.paidAt) : '';
+  const confident = r.outcome === 'will_mark_paid';
+
+  // Why it did or didn't match, in plain words. The whole point of this screen
+  // is that nobody approves money movement they don't understand.
+  const reason = confident
+    ? (r.matchedBy === 'link_id'
+        ? 'The payment carries this link’s own ID — an exact match, no guessing.'
+        : r.matchedBy === 'email'
+        ? 'Matched on the email address the link was sent to, plus the same amount and milestone.'
+        : 'Matched on customer name and job address, plus the same amount and milestone.')
+    : (r.suggestions && r.suggestions.length
+        ? 'Nothing identified this payment for certain. The link(s) below owe the same amount for the same milestone — confirm which one, if any.'
+        : 'No unpaid link matches this amount and milestone. It may already be recorded, or belong to a job not in the hub.');
+
+  const paidWhat = `
+    <div class="cust-sub"><strong>Paid:</strong> ${amt} · ${escapeHtml(kind)}${when ? ' · ' + when : ''}</div>
+    <div class="cust-sub"><strong>They entered:</strong> ${escapeHtml(r.customerName || '—')}${r.customerEmail ? ' · ' + escapeHtml(r.customerEmail) : ''}</div>
+    ${r.jobAddress ? `<div class="cust-sub"><strong>Address given:</strong> ${escapeHtml(r.jobAddress)}</div>` : ''}
+    ${r.paymentMethod ? `<div class="cust-sub"><strong>Method:</strong> ${escapeHtml(r.paymentMethod)}</div>` : ''}`;
+
+  let target = '';
+  if (confident && r.matchedLink) {
+    const L = r.matchedLink;
+    target = `
+      <div class="cust-sub" style="margin-top:8px;"><strong>Would attach to this link:</strong></div>
+      <div class="cust-sub">${escapeHtml(L.name || '(no name)')}${L.email ? ' · ' + escapeHtml(L.email) : ''}</div>
+      ${L.address ? `<div class="cust-sub">${escapeHtml(L.address)}</div>` : ''}
+      <div class="cust-sub">${fmtMoney(L.amountCents)} · sent ${L.lastSentAt ? fmtDateShort(L.lastSentAt) : 'never'}</div>`;
+  } else if (r.suggestions && r.suggestions.length) {
+    const opts = r.suggestions.map((sg) => `
+      <label class="checkbox-row" style="align-items:flex-start;">
+        <input type="radio" name="rc-${i}" value="${escapeHtml(sg.id)}" />
+        <span>
+          <span class="cust-name">${escapeHtml(sg.name || '(no name)')}</span>
+          <span class="cust-sub">${escapeHtml(sg.email || '')}${sg.address ? ' · ' + escapeHtml(sg.address) : ''}</span>
+          <span class="cust-sub">${fmtMoney(sg.amountCents)}</span>
+        </span>
+      </label>`).join('');
+    target = `<div class="cust-sub" style="margin-top:8px;"><strong>Possible links:</strong></div>${opts}`;
+  }
+
+  const canApprove = confident || (r.suggestions && r.suggestions.length);
+  return `
+    <div class="selected-job-banner" style="display:block; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
+        <div style="min-width:0;">
+          <div class="cust-name">${escapeHtml(r.customerName || r.customerEmail || r.paymentIntentId)}</div>
+          <span class="badge ${confident ? 'paid' : 'awaiting'}">${confident ? 'Confident match' : 'Needs your call'}</span>
+        </div>
+        ${canApprove ? `<button type="button" class="secondary rc-approve" data-i="${i}" data-pi="${escapeHtml(r.paymentIntentId)}" data-link="${escapeHtml(r.linkId || '')}">Approve</button>` : ''}
+      </div>
+      ${paidWhat}
+      <div class="cust-sub" style="margin-top:8px; font-style:italic;">${reason}</div>
+      ${target}
+      <div class="cust-sub rc-result" data-i="${i}" style="margin-top:6px;"></div>
+    </div>`;
+}
+
 function renderReconcilePreview(data) {
   const s = data.summary;
-  const money = fmtMoney(s.willMarkPaidCents);
-  const rows = data.rows.map((r) => {
-    const who = escapeHtml(r.customerName || r.customerEmail || r.paymentIntentId);
-    const amt = fmtMoney(r.baseAmountCents || r.amountCents);
-    if (r.outcome === 'will_mark_paid') {
-      return `<div class="cust-sub">✓ <strong>${who}</strong> — ${amt} — matches “${escapeHtml(r.linkName || '')}” (by ${escapeHtml(r.matchedBy)})</div>`;
-    }
-    const hint = (r.suggestions && r.suggestions.length === 1)
-      ? ` — possibly “${escapeHtml(r.suggestions[0].name || '')}”, needs a human`
-      : (r.suggestions && r.suggestions.length > 1 ? ` — ${r.suggestions.length} possible links, needs a human` : ' — no matching link found');
-    return `<div class="cust-sub">• <strong>${who}</strong> — ${amt}${hint}</div>`;
-  }).join('');
-
   reconcilePanel.style.display = 'block';
   reconcilePanel.innerHTML = `
     <label class="field-label">Reconciliation</label>
-    <p class="cust-sub" style="margin-bottom:10px;">
-      ${s.unreconciled} succeeded payment(s) in Stripe aren't reflected in the hub.
-      ${s.willMarkPaid} can be matched with confidence (${money}).
-      ${s.ambiguous + s.noMatch} need a person to look.
+    <p class="cust-sub" style="margin-bottom:12px;">
+      ${s.unreconciled} succeeded Stripe payment(s) aren't reflected in the hub
+      (${fmtMoney(s.willMarkPaidCents)} of it confidently matched).
+      Approve each one individually — nothing changes until you do.
     </p>
-    ${rows}
+    ${data.rows.map((r, i) => reconcileRowHtml(r, i)).join('')}
     <div class="panel-actions">
-      ${s.willMarkPaid ? '<button type="button" class="primary" id="reconcile-apply">Mark ' + s.willMarkPaid + ' as paid</button>' : ''}
       <button type="button" class="secondary" id="reconcile-dismiss">Close</button>
     </div>`;
 
-  const applyBtn = document.getElementById('reconcile-apply');
-  if (applyBtn) applyBtn.addEventListener('click', applyReconcile);
+  reconcilePanel.querySelectorAll('.rc-approve').forEach((btn) => {
+    btn.addEventListener('click', () => approveOne(btn));
+  });
   document.getElementById('reconcile-dismiss').addEventListener('click', () => {
     reconcilePanel.style.display = 'none';
+    loadAndRender();
   });
 }
 
-async function applyReconcile() {
-  const btn = document.getElementById('reconcile-apply');
-  btn.textContent = 'Applying…';
+// One payment at a time. A hand-picked link is sent explicitly so the server
+// can re-check the amount before trusting it.
+async function approveOne(btn) {
+  const i = btn.getAttribute('data-i');
+  const paymentIntentId = btn.getAttribute('data-pi');
+  let linkId = btn.getAttribute('data-link');
+  const chosen = reconcilePanel.querySelector(`input[name="rc-${i}"]:checked`);
+  if (chosen) linkId = chosen.value;
+
+  const out = reconcilePanel.querySelector(`.rc-result[data-i="${i}"]`);
+  if (!linkId) {
+    out.textContent = 'Pick which link this payment belongs to first.';
+    return;
+  }
+  btn.textContent = 'Approving…';
   btn.disabled = true;
   try {
     const res = await fetch('/api/reconcile', {
       method: 'POST',
-      headers: { 'X-Hub-Session': getSessionToken() },
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ apply: [{ paymentIntentId, linkId }] }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not apply the reconciliation.');
-    reconcilePanel.innerHTML = `
-      <label class="field-label">Reconciliation</label>
-      <p class="cust-sub">Marked ${data.appliedCount} payment link(s) paid.
-      ${data.stillUnresolved.length} still need a person to look at them.</p>`;
-    await loadAndRender();
+    if (!res.ok) throw new Error(data.error || 'Could not approve.');
+    if (data.appliedCount) {
+      btn.textContent = 'Approved';
+      out.textContent = `Marked ${escapeHtml(data.applied[0].name || 'this link')} paid.`;
+    } else {
+      const why = (data.rejected && data.rejected[0] && data.rejected[0].why) || 'Nothing was changed.';
+      btn.textContent = 'Approve';
+      btn.disabled = false;
+      out.textContent = why;
+    }
   } catch (err) {
-    btn.textContent = 'Retry';
+    btn.textContent = 'Approve';
     btn.disabled = false;
-    await showConfirmModal({ title: 'Reconcile failed', message: err.message, confirmLabel: 'OK', danger: true });
+    out.textContent = err.message;
   }
 }
 
