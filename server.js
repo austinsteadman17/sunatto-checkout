@@ -2511,6 +2511,21 @@ app.post('/api/custom-invoice', async (req, res) => {
 // ambiguous is reported for a human rather than guessed at.
 // ---------------------------------------------------------------------
 
+// "Bank ••••5190" / "Visa ••••4242" — enough for a person to recognise the
+// payment without opening Stripe.
+function describeChargeMethod(charge) {
+  if (!charge || typeof charge === 'string') return '';
+  const d = charge.payment_method_details || {};
+  if (d.us_bank_account) {
+    return `Bank ${d.us_bank_account.bank_name || ''} ••••${d.us_bank_account.last4 || ''}`.trim();
+  }
+  if (d.card) {
+    const brand = (d.card.brand || 'Card').replace(/^./, (c) => c.toUpperCase());
+    return `${brand} ••••${d.card.last4 || ''} (${d.card.funding || ''})`.trim();
+  }
+  return d.type || '';
+}
+
 function reconcileCandidatesFor(pi, links) {
   const type = pi.metadata && pi.metadata.sunatto_payment_type;
   const baseAmountCents = pi.metadata && Number(pi.metadata.base_amount_cents);
@@ -2572,7 +2587,7 @@ async function buildReconciliationReport() {
   let page = 0;
   let startingAfter;
   while (page < 10) {
-    const params = { limit: 100, expand: ['data.customer'] };
+    const params = { limit: 100, expand: ['data.customer', 'data.latest_charge'] };
     if (startingAfter) params.starting_after = startingAfter;
     const batch = await stripe.paymentIntents.list(params);
     for (const pi of batch.data) {
@@ -2595,6 +2610,22 @@ async function buildReconciliationReport() {
         candidateCount: matches.length,
         linkId: matches.length === 1 ? matches[0].id : null,
         linkName: matches.length === 1 ? matches[0].customerName : null,
+        // Everything a person needs to judge the match without leaving the
+        // page: how they paid, and exactly which link record it would attach
+        // to. Without this, "approve" is a leap of faith.
+        paymentMethod: describeChargeMethod(pi.latest_charge),
+        description: pi.description || '',
+        matchedLink: matches.length === 1 ? {
+          id: matches[0].id,
+          name: matches[0].customerName,
+          email: matches[0].customerEmail,
+          address: matches[0].jobAddress,
+          amountCents: matches[0].amountCents,
+          type: matches[0].type,
+          createdAt: matches[0].createdAt,
+          lastSentAt: matches[0].lastSentAt,
+          emailSent: !!matches[0].emailSent,
+        } : null,
         // Same amount + milestone, but nothing confirmed the identity. Shown
         // so staff can eyeball it and use Mark Paid, rather than the tool
         // silently deciding.
@@ -2644,28 +2675,44 @@ app.post('/api/reconcile', async (req, res) => {
   const user = await requireAdmin(req, res);
   if (!user) return;
   try {
+    // The caller approves specific pairs — never "apply everything". Each is
+    // re-validated against a freshly built report, so a stale page can't
+    // approve something that changed in the meantime.
+    const requested = Array.isArray(req.body && req.body.apply) ? req.body.apply : null;
+    if (!requested || !requested.length) {
+      return res.status(400).json({ error: 'Nothing selected to approve.' });
+    }
+
     const { links, rows } = await buildReconciliationReport();
     const applied = [];
-    for (const row of rows) {
-      if (row.outcome !== 'will_mark_paid') continue;
-      const link = links.find((l) => l.id === row.linkId);
-      if (!link || link.paid) continue;
+    const rejected = [];
+    for (const pick of requested) {
+      const row = rows.find((r) => r.paymentIntentId === pick.paymentIntentId);
+      if (!row) { rejected.push({ ...pick, why: 'That payment is no longer unreconciled.' }); continue; }
+      const linkId = pick.linkId || row.linkId;
+      const link = links.find((l) => l.id === linkId);
+      if (!link) { rejected.push({ ...pick, why: 'Link not found.' }); continue; }
+      if (link.paid) { rejected.push({ ...pick, why: 'That link is already marked paid.' }); continue; }
+      // Safety net for hand-picked matches: the money must line up. Stops a
+      // mis-click attaching a $5,300 deposit to a $25,600 balance.
+      const expected = row.baseAmountCents || row.amountCents;
+      if (link.amountCents !== expected) {
+        rejected.push({ ...pick, why: `Amount mismatch — payment is ${(expected / 100).toFixed(2)}, link is ${(link.amountCents / 100).toFixed(2)}.` });
+        continue;
+      }
+      {
       link.paid = true;
       link.paidAt = row.paidAt || new Date().toISOString();
       link.paymentIntentId = row.paymentIntentId;
       link.reconciledAt = new Date().toISOString();
       link.reconciledBy = fullNameOf(user);
-      link.reconciledHow = row.matchedBy;
-      applied.push({ linkId: link.id, name: link.customerName, amountCents: link.amountCents, matchedBy: row.matchedBy });
+      link.reconciledHow = pick.linkId ? 'approved_by_hand' : row.matchedBy;
+      applied.push({ linkId: link.id, name: link.customerName, amountCents: link.amountCents, matchedBy: link.reconciledHow });
+      }
     }
     if (applied.length) await saveLinks(links);
     console.log(`Reconcile: ${fullNameOf(user)} marked ${applied.length} link(s) paid.`);
-    res.json({
-      ok: true,
-      applied,
-      appliedCount: applied.length,
-      stillUnresolved: rows.filter((r) => r.outcome !== 'will_mark_paid'),
-    });
+    res.json({ ok: true, applied, appliedCount: applied.length, rejected });
   } catch (err) {
     console.error('reconcile apply error:', err);
     res.status(500).json({ error: err.message });
