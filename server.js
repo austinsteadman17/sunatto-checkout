@@ -2480,6 +2480,266 @@ app.post('/api/custom-invoice', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------
+// 7a5. Switch payment method — invoice <-> payment link.
+//
+// A customer sent an invoice may come back and say they'd rather pay by
+// card, or vice versa. The two channels are NOT interchangeable:
+//
+//   Invoice      — Stripe's hosted invoice page. This account has only ACH
+//                  Direct Debit enabled for invoices, and Stripe invoices
+//                  cannot carry the 3% credit-card surcharge (that logic
+//                  lives in /api/create-intent, which only checkout.html
+//                  calls). So an invoice is effectively bank-only.
+//   Payment link — checkout.html. Offers card AND bank, detects credit vs
+//                  debit, and applies the surcharge with disclosure.
+//
+// So switching is not cosmetic — it changes what the customer can actually
+// do and whether the surcharge gets collected. Whichever request is now
+// obsolete is voided as part of the switch, so a customer is never holding
+// two live payment requests for the same money.
+//
+// Amounts are recomputed from the Monday job's Total Cost rather than
+// carried across, per Austin: an 80% request should always be 80% of what
+// the board currently says, not 80% of whatever it said when the original
+// went out.
+// ---------------------------------------------------------------------
+
+// Superset of the two normalized-job shapes used elsewhere: findMatchedJob
+// (invoices) matches on email, findMatchedJobForLink matches on name. This
+// carries both plus the Total Cost the switch needs.
+async function buildJobIndexForUser(user, admin) {
+  const jobs = await getUserAttachedJobs(fullNameOf(user), { isAdmin: admin });
+  return jobs.map((j) => ({
+    id: j.id,
+    name: normalizeForMatch(j.name),
+    email: (j.email || '').toLowerCase().trim(),
+    address: normalizeAddressForMatch(j.address),
+    totalCostCents: j.totalCostCents,
+    rawName: j.name,
+    rawAddress: j.address,
+    phone: j.phone || '',
+    groupTitle: j.groupTitle || null,
+  }));
+}
+
+// 20% / 80% of the board's Total Cost. Falls back to whatever the original
+// request was for when the job can't be matched or has no cost recorded —
+// better to reissue the same amount than to fail the switch outright.
+function switchAmountCents(kind, job, fallbackCents) {
+  if (job && job.totalCostCents) {
+    if (kind === 'deposit') return Math.round(job.totalCostCents * 0.2);
+    if (kind === 'balance') return Math.round(job.totalCostCents * 0.8);
+  }
+  return fallbackCents;
+}
+
+function buildCheckoutUrl(req, { type, amountCents, name, email, phone, address }) {
+  const params = new URLSearchParams();
+  params.set('type', type || 'custom');
+  params.set('amount', (amountCents / 100).toFixed(2));
+  if (name) params.set('name', name);
+  if (email) params.set('email', email);
+  if (phone) params.set('phone', phone);
+  if (address) params.set('address', address);
+  const origin = process.env.PUBLIC_SITE_URL || `${req.protocol}://${req.get('host')}`;
+  return `${origin}/checkout.html?${params.toString()}`;
+}
+
+app.post('/api/switch-method', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const { source, id, deliver } = req.body;
+    if (!['invoice', 'link'].includes(source)) {
+      return res.status(400).json({ error: 'source must be "invoice" or "link".' });
+    }
+    if (!id) return res.status(400).json({ error: 'id is required.' });
+    const sendEmail = deliver !== 'manual';
+
+    const admin = isUserAdmin(user);
+    const jobIndex = await buildJobIndexForUser(user, admin);
+
+    // ---------- Invoice -> Payment link (customer wants to pay by card) ----------
+    if (source === 'invoice') {
+      const invoice = await stripe.invoices.retrieve(id, { expand: ['payment_intent'] });
+      if (!admin && !invoiceMatchesJobs(invoice, jobIndex) && !invoiceCreatedByUser(invoice, user)) {
+        return res.status(404).json({ error: 'Invoice not found.' });
+      }
+      if (invoice.status === 'paid') {
+        return res.status(409).json({ error: 'This invoice is already paid — nothing to switch.' });
+      }
+      if (invoice.status === 'void') {
+        return res.status(409).json({ error: 'This invoice was already voided.' });
+      }
+      if (invoicePaymentIsProcessing(invoice)) {
+        return res.status(409).json({ error: 'A payment on this invoice is already clearing. Wait for it to settle before switching.' });
+      }
+
+      const job = findMatchedJob(invoice, jobIndex);
+      const kind = (invoice.metadata && invoice.metadata.sunatto_invoice_kind) || null;
+      const amountCents = switchAmountCents(kind, job, invoice.amount_due);
+      if (!amountCents || amountCents <= 0) {
+        return res.status(400).json({ error: 'Could not work out an amount for this switch.' });
+      }
+
+      const customerName = invoice.customer_name || (job && job.rawName) || '';
+      const customerEmail = invoice.customer_email || '';
+      const jobAddress = (job && job.rawAddress) || invoiceInstallationAddress(invoice) || '';
+
+      // Void first: never leave a live invoice alongside a live link for the
+      // same money. A draft was never sent, so it's deleted outright rather
+      // than leaving a voided husk in the Voided tab.
+      if (invoice.status === 'draft') {
+        await stripe.invoices.del(invoice.id);
+      } else {
+        await stripe.invoices.voidInvoice(invoice.id);
+      }
+
+      const checkoutUrl = buildCheckoutUrl(req, {
+        type: kind === 'deposit' ? 'deposit' : kind === 'balance' ? 'balance' : 'custom',
+        amountCents,
+        name: customerName,
+        email: customerEmail,
+        phone: (job && job.phone) || '',
+        address: jobAddress,
+      });
+
+      const now = new Date().toISOString();
+      const record = {
+        id: crypto.randomUUID(),
+        customerName,
+        customerEmail,
+        customerPhone: (job && job.phone) || '',
+        jobAddress,
+        type: kind === 'deposit' ? 'deposit' : kind === 'balance' ? 'balance' : 'custom',
+        amountCents,
+        checkoutUrl,
+        createdAt: now,
+        lastSentAt: now,
+        sentCount: 0,
+        emailSent: false,
+        paid: false,
+        paidAt: null,
+        paymentIntentId: null,
+        switchedFromInvoiceId: invoice.id,
+      };
+
+      let messageId = null;
+      if (sendEmail) {
+        if (!customerEmail) {
+          return res.status(400).json({ error: 'No email on file for this customer — switch created no link. Use "give me the link" instead.' });
+        }
+        const { subject, textBody, htmlBody } = buildHomeownerEmail({
+          customerName,
+          jobAddress,
+          type: record.type,
+          amount: (amountCents / 100).toFixed(2),
+          checkoutUrl,
+        });
+        messageId = await sendViaPostmark({ to: customerEmail, subject, htmlBody, textBody });
+        record.emailSent = true;
+        record.sentCount = 1;
+        record.lastSentAt = new Date().toISOString();
+      }
+
+      const links = await loadLinks();
+      links.unshift(record);
+      await saveLinks(links);
+
+      console.log(`Switch: invoice ${invoice.id} -> payment link ${record.id} by ${fullNameOf(user)} (emailed: ${record.emailSent}).`);
+      return res.json({ ok: true, to: 'link', linkId: record.id, checkoutUrl, emailed: record.emailSent, messageId });
+    }
+
+    // ---------- Payment link -> Invoice (customer wants to pay by bank) ----------
+    const links = await loadLinks();
+    const record = links.find((l) => l.id === id);
+    if (!record || (!admin && !linkMatchesJobs(record, jobIndex))) {
+      return res.status(404).json({ error: 'Payment link not found.' });
+    }
+    if (record.paid) {
+      return res.status(409).json({ error: 'This link is already paid — nothing to switch.' });
+    }
+    if (record.voided) {
+      return res.status(409).json({ error: 'This link was already voided.' });
+    }
+    if (!record.customerEmail) {
+      return res.status(400).json({ error: 'An invoice needs an email address, and this link has none on file.' });
+    }
+
+    const job = findMatchedJobForLink(record, jobIndex);
+    const kind = record.type === 'deposit' ? 'deposit' : record.type === 'balance' ? 'balance' : null;
+    const amountCents = switchAmountCents(kind, job, record.amountCents);
+
+    const existing = await stripe.customers.list({ email: record.customerEmail, limit: 1 });
+    let customer = existing.data[0];
+    if (!customer) {
+      customer = await stripe.customers.create({
+        name: record.customerName,
+        email: record.customerEmail,
+        phone: record.customerPhone || undefined,
+        address: record.jobAddress ? { country: 'US', line1: record.jobAddress } : undefined,
+      });
+    }
+
+    let invoice;
+    if (kind && job && job.totalCostCents) {
+      // Matches the pipeline's own invoices exactly — full project cost with
+      // a negative offset line, so the homeowner sees the whole job.
+      invoice = await createSunattoDraftInvoice(customer, {
+        id: job.id,
+        address: job.rawAddress || record.jobAddress || '',
+        totalCostCents: job.totalCostCents,
+      }, kind);
+    } else {
+      // No board match or no Total Cost recorded — a flat invoice for the
+      // amount owed. Looks different from the pipeline invoices, but is
+      // honest about what it is rather than inventing a project total.
+      await stripe.invoiceItems.create({
+        customer: customer.id,
+        description: kind === 'deposit'
+          ? 'Residential Solar Installation — 20% Deposit'
+          : kind === 'balance'
+          ? 'Residential Solar Installation — Final 80% Balance'
+          : 'Residential Solar Installation',
+        amount: amountCents,
+        currency: 'usd',
+      });
+      invoice = await stripe.invoices.create({
+        customer: customer.id,
+        collection_method: 'send_invoice',
+        due_date: Math.floor(Date.now() / 1000) + 24 * 60 * 60,
+        auto_advance: false,
+        pending_invoice_items_behavior: 'include',
+        footer: CUSTOM_INVOICE_FOOTER,
+        custom_fields: record.jobAddress ? [{ name: 'Address', value: record.jobAddress }] : undefined,
+        metadata: kind ? { sunatto_invoice_kind: kind } : {},
+      });
+    }
+
+    const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
+    await stripe.invoices.sendInvoice(finalized.id);
+    await recordInvoiceSend(finalized.id, 1);
+
+    record.voided = true;
+    record.voidedAt = new Date().toISOString();
+    record.switchedToInvoiceId = finalized.id;
+    await saveLinks(links);
+
+    console.log(`Switch: payment link ${record.id} -> invoice ${finalized.id} by ${fullNameOf(user)}.`);
+    return res.json({
+      ok: true,
+      to: 'invoice',
+      invoiceId: finalized.id,
+      invoiceNumber: finalized.number,
+      hostedInvoiceUrl: finalized.hosted_invoice_url,
+    });
+  } catch (err) {
+    console.error('switch-method error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Part A endpoint: Monday calls this when either status column changes ---
 //
 // Security note: Monday's webhook feature has no per-request signature to
