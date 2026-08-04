@@ -1469,6 +1469,19 @@ function publicInvoice(invoice, matchedJob) {
     totalCents: invoice.total,
     created: invoice.created ? new Date(invoice.created * 1000).toISOString() : null,
     dueDate: invoice.due_date ? new Date(invoice.due_date * 1000).toISOString() : null,
+    // When the invoice actually went out, as opposed to when the record was
+    // created — these differ, and "sent" is the date staff care about when
+    // deciding whether to chase someone.
+    sentAt: invoice.status_transitions && invoice.status_transitions.finalized_at
+      ? new Date(invoice.status_transitions.finalized_at * 1000).toISOString()
+      : null,
+    // Counted by us on each resend (see recordInvoiceSend) because Stripe
+    // doesn't expose a send count. Null means "we weren't tracking yet" —
+    // shown as an em dash rather than a misleading 1.
+    sentCount: invoice.metadata && invoice.metadata.sunatto_sent_count
+      ? parseInt(invoice.metadata.sunatto_sent_count, 10)
+      : null,
+    lastSentAt: (invoice.metadata && invoice.metadata.sunatto_last_sent_at) || null,
     hostedInvoiceUrl: invoice.hosted_invoice_url || null,
     dashboardUrl: invoiceDashboardUrl(invoice.id),
     type,
@@ -2096,7 +2109,29 @@ async function createSunattoDraftInvoice(customer, monday, kind) {
 async function finalizeAndSendInvoice(invoice, itemId, columnId) {
   await stripe.invoices.finalizeInvoice(invoice.id);
   await stripe.invoices.sendInvoice(invoice.id);
+  await recordInvoiceSend(invoice.id, 1);
   await setMondayStatusColumn(itemId, columnId, 'Sent');
+}
+
+// Stripe has no "how many times was this emailed" field, so we keep our own
+// counter in invoice metadata. Metadata IS writable on finalized invoices
+// (unlike due_date), so this works on open invoices too. Best-effort: a
+// failure here must never break an otherwise successful send.
+async function recordInvoiceSend(invoiceId, countIfUnset) {
+  try {
+    const current = await stripe.invoices.retrieve(invoiceId);
+    const prior = current.metadata && current.metadata.sunatto_sent_count
+      ? parseInt(current.metadata.sunatto_sent_count, 10)
+      : (countIfUnset - 1);
+    await stripe.invoices.update(invoiceId, {
+      metadata: {
+        sunatto_sent_count: String(prior + 1),
+        sunatto_last_sent_at: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.error(`Could not record send count for invoice ${invoiceId} (send itself succeeded):`, err.message);
+  }
 }
 
 // Triggered by flipping the "20% Invoice"/"80% Invoice" status to "Resend"
@@ -2162,6 +2197,7 @@ async function handleResendInvoice(itemId, columnId, kind, monday) {
   // invoice.status === 'open' (the normal case) — just re-send the exact
   // same invoice email again, no changes to the invoice itself.
   await stripe.invoices.sendInvoice(invoice.id);
+  await recordInvoiceSend(invoice.id, 2);
   await setMondayStatusColumn(itemId, columnId, 'Sent');
   console.log(`Monday invoice webhook: item ${itemId} (${kind}) — resent invoice ${invoice.id}, marked Sent.`);
 }
