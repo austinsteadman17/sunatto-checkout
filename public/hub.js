@@ -1847,8 +1847,84 @@ function renderUnattributed(rows) {
           <div class="cust-sub" style="margin-top:6px;">paid ${r.paidAt ? fmtDateShort(r.paidAt) : 'date unknown'}${r.method ? ' · ' + escapeHtml(r.method) : ''}</div>
           <div class="cust-sub" style="margin-top:6px; font-style:italic;">${escapeHtml(r.why)}</div>
           <div class="cust-sub"><strong>What to do:</strong> ${escapeHtml(r.fix)}</div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+            <select class="field-input lp-job" data-pi="${escapeHtml(r.id)}" style="flex:1; min-width:220px; margin:0;">
+              <option value="">Link this payment to a job…</option>
+              ${jobOptionsHtml(r)}
+            </select>
+            <select class="field-input lp-milestone" data-pi="${escapeHtml(r.id)}" style="width:150px; margin:0;">
+              <option value="deposit">20% Deposit</option>
+              <option value="balance">80% Balance</option>
+              <option value="custom">Custom</option>
+            </select>
+            <button type="button" class="secondary lp-link" data-pi="${escapeHtml(r.id)}" style="margin:0;">Link it</button>
+          </div>
+          <div class="cust-sub lp-result" data-pi="${escapeHtml(r.id)}" style="margin-top:6px;"></div>
         </div>`).join('')}
     </div>`;
+
+  jobsUnattributed.querySelectorAll('.lp-link').forEach((btn) => {
+    btn.addEventListener('click', () => linkPaymentToJob(btn));
+  });
+}
+
+// Builds the job dropdown for an unattributed payment. Jobs whose 20% or 80%
+// milestone equals this exact amount are surfaced first and labelled as such
+// — that arithmetic is usually the giveaway. Bonnie's $5,300 is exactly 20%
+// of Steve Canesso's $26,500, which is how you know it's his job.
+function jobOptionsHtml(payment) {
+  const amt = payment.grossCents;
+  const scored = (jobsData.jobs || []).map((j) => {
+    const total = j.totalCostCents || 0;
+    let hint = '';
+    if (total) {
+      if (Math.abs(amt - Math.round(total * 0.2)) <= 100) hint = ' — 20% of this job';
+      else if (Math.abs(amt - Math.round(total * 0.8)) <= 100) hint = ' — 80% of this job';
+      else if (Math.abs(amt - total) <= 100) hint = ' — the full amount';
+    }
+    return { j, hint };
+  });
+  scored.sort((a, b) => {
+    if (!!a.hint !== !!b.hint) return a.hint ? -1 : 1;
+    return (a.j.name || '').localeCompare(b.j.name || '');
+  });
+  return scored.map(({ j, hint }) =>
+    `<option value="${escapeHtml(j.mondayItemId)}">${escapeHtml(j.name || '(unnamed)')}${j.address ? ' — ' + escapeHtml(j.address) : ''}${escapeHtml(hint)}</option>`
+  ).join('');
+}
+
+async function linkPaymentToJob(btn) {
+  const pi = btn.getAttribute('data-pi');
+  const jobSel = jobsUnattributed.querySelector(`.lp-job[data-pi="${pi}"]`);
+  const msSel = jobsUnattributed.querySelector(`.lp-milestone[data-pi="${pi}"]`);
+  const out = jobsUnattributed.querySelector(`.lp-result[data-pi="${pi}"]`);
+  if (!jobSel.value) { out.textContent = 'Pick which job this payment belongs to first.'; return; }
+
+  const jobName = jobSel.options[jobSel.selectedIndex].textContent.split(' — ')[0];
+  const ok = await showConfirmModal({
+    title: 'Link this payment?',
+    message: `This payment will be counted toward ${jobName}, and a note will be added to that job on Monday. Nothing about the money itself changes.`,
+    confirmLabel: 'Link it',
+  });
+  if (!ok) return;
+
+  btn.textContent = 'Linking…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/link-payment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ paymentIntentId: pi, mondayItemId: jobSel.value, milestone: msSel.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not link this payment.');
+    out.textContent = 'Linked. Reloading…';
+    await loadJobs();
+  } catch (err) {
+    btn.textContent = 'Link it';
+    btn.disabled = false;
+    out.textContent = err.message;
+  }
 }
 
 function renderJobs() {
