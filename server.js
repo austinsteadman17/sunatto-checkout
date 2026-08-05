@@ -3331,6 +3331,266 @@ app.delete('/api/admin/users/:id', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------
+// 7a7. Backfill — put a job id on money that predates the tagging.
+//
+// From 4 Aug 2026 every payment link records its Monday item, and every
+// PaymentIntent raised against one carries monday_item_id (see section 1).
+// Everything BEFORE that is untagged, so a job's history can only be
+// assembled by matching names and addresses after the fact — the guesswork
+// this whole change exists to retire.
+//
+// This walks that history once and writes the tag where it can be worked
+// out with confidence. Two rules govern it:
+//
+//   Never overwrite.  If an object already carries monday_item_id, it is
+//                     left exactly as it is. This can only fill blanks.
+//   Never guess.      A match is applied only when the evidence points at
+//                     exactly ONE job. Anything ambiguous is reported for
+//                     a person to settle, not resolved by coin-flip.
+//
+// GET  reports what WOULD happen and changes nothing.
+// POST applies it, optionally narrowed to specific ids.
+// ---------------------------------------------------------------------
+
+// Builds a lookup of every job on the board, indexed the three ways the
+// history can be matched against. Admin-scoped deliberately: a backfill
+// reasons about all the company's money, not one rep's slice of it.
+async function buildBackfillJobIndex() {
+  const jobs = await getUserAttachedJobs('', { isAdmin: true });
+  const byEmail = new Map();
+  const byAddress = new Map();
+  for (const j of jobs) {
+    const e = (j.email || '').toLowerCase().trim();
+    const a = normalizeAddressForMatch(j.address);
+    if (e) { if (!byEmail.has(e)) byEmail.set(e, []); byEmail.get(e).push(j); }
+    if (a) { if (!byAddress.has(a)) byAddress.set(a, []); byAddress.get(a).push(j); }
+  }
+  return { jobs, byEmail, byAddress };
+}
+
+// The match ladder, strongest evidence first. Returns the job and the
+// reason, or a null job plus whatever candidates were in contention so the
+// report can explain WHY it declined rather than just saying "no match".
+function backfillMatch({ email, name, address }, index) {
+  const e = (email || '').toLowerCase().trim();
+  const a = normalizeAddressForMatch(address);
+  const n = normalizeForMatch(name);
+
+  const emailHits = e ? (index.byEmail.get(e) || []) : [];
+  const addressHits = a ? (index.byAddress.get(a) || []) : [];
+
+  // Email and address independently agree on one job. Strongest signal
+  // available without a stored id.
+  if (emailHits.length === 1 && addressHits.length === 1 && emailHits[0].id === addressHits[0].id) {
+    return { job: emailHits[0], how: 'email_and_address', candidates: [] };
+  }
+  // A board email that belongs to exactly one job.
+  if (emailHits.length === 1) return { job: emailHits[0], how: 'email', candidates: [] };
+  // An address that belongs to exactly one job. Note this runs BEFORE the
+  // name check on purpose: three Evan Shiels jobs share a name and an
+  // email, and only the address tells them apart.
+  if (addressHits.length === 1) return { job: addressHits[0], how: 'address', candidates: [] };
+
+  // Last resort: fuzzy name AND fuzzy address must both agree, and land on
+  // exactly one job. Either alone is far too loose to act on.
+  if (n && a) {
+    const fuzzy = index.jobs.filter((j) => {
+      const jn = normalizeForMatch(j.name);
+      const ja = normalizeAddressForMatch(j.address);
+      return jn && ja
+        && (jn.includes(n) || n.includes(jn))
+        && (ja.includes(a) || a.includes(ja));
+    });
+    if (fuzzy.length === 1) return { job: fuzzy[0], how: 'name_address', candidates: [] };
+    if (fuzzy.length > 1) return { job: null, how: null, candidates: fuzzy };
+  }
+
+  // Nothing conclusive. Hand back whoever was in contention so the report
+  // can say "three jobs share this email" instead of an unhelpful silence.
+  const contenders = emailHits.length > 1 ? emailHits : (addressHits.length > 1 ? addressHits : []);
+  return { job: null, how: null, candidates: contenders };
+}
+
+// Which slice of the job a given amount represents. Prefers an explicit
+// stored kind; falls back to comparing against the board's Total Cost,
+// which is the only place the 20/80 split is actually written down.
+function inferMilestone(amountCents, job, storedKind) {
+  if (storedKind) return storedKind;
+  const total = job && job.totalCostCents;
+  if (!total || !amountCents) return 'custom';
+  const ratio = amountCents / total;
+  if (Math.abs(ratio - 0.2) < 0.02) return 'deposit';
+  if (Math.abs(ratio - 0.8) < 0.02) return 'balance';
+  if (Math.abs(ratio - 1) < 0.02) return 'full';
+  return 'custom';
+}
+
+async function buildBackfillReport() {
+  const [index, invoices, links] = await Promise.all([
+    buildBackfillJobIndex(),
+    listAllStripeInvoices(),
+    loadLinks(),
+  ]);
+
+  const rows = [];
+
+  for (const inv of invoices) {
+    if (inv.metadata && inv.metadata.monday_item_id) continue; // already tagged
+    const cust = inv.customer_email || (inv.customer && inv.customer.email) || '';
+    const addressField = (inv.custom_fields || []).find((f) => /address/i.test(f.name || ''));
+    const { job, how, candidates } = backfillMatch({
+      email: cust,
+      name: inv.customer_name || '',
+      address: (addressField && addressField.value) || '',
+    }, index);
+    rows.push({
+      kind: 'invoice',
+      id: inv.id,
+      number: inv.number || null,
+      amountCents: inv.total,
+      status: inv.status,
+      customerName: inv.customer_name || '',
+      customerEmail: cust,
+      address: (addressField && addressField.value) || '',
+      createdAt: inv.created ? new Date(inv.created * 1000).toISOString() : null,
+      matchedBy: how,
+      mondayItemId: job ? String(job.id) : null,
+      mondayJobName: job ? job.name : null,
+      milestone: job ? inferMilestone(inv.total, job, inv.metadata && inv.metadata.sunatto_invoice_kind) : null,
+      outcome: job ? 'will_tag' : 'needs_a_person',
+      why: job ? null : (candidates.length
+        ? `${candidates.length} jobs on the board fit this equally well — an address or email on the board needs correcting before this can be settled automatically.`
+        : 'Nothing on the board matches this customer. Either the job was never added, or the email and address differ from what the customer gave Stripe.'),
+      candidates: candidates.map((c) => ({ id: String(c.id), name: c.name, address: c.address })),
+    });
+  }
+
+  let page = 0;
+  let startingAfter;
+  while (page < 10) {
+    const params = { limit: 100, expand: ['data.customer'] };
+    if (startingAfter) params.starting_after = startingAfter;
+    const batch = await stripe.paymentIntents.list(params);
+    for (const pi of batch.data) {
+      if (pi.status !== 'succeeded') continue;
+      if (!pi.metadata || !pi.metadata.sunatto_payment_type) continue; // an invoice payment
+      if (pi.metadata.monday_item_id) continue;                        // already tagged
+
+      // A link raised after 4 Aug already knows its job — no matching needed.
+      let job = null;
+      let how = null;
+      let candidates = [];
+      const rec = pi.metadata.sunatto_link_id
+        ? links.find((l) => l.id === pi.metadata.sunatto_link_id)
+        : null;
+      if (rec && rec.mondayItemId) {
+        job = index.jobs.find((j) => String(j.id) === String(rec.mondayItemId)) || null;
+        if (job) how = 'link_record';
+      }
+      if (!job) {
+        const m = backfillMatch({
+          email: (pi.customer && pi.customer.email) || pi.receipt_email || '',
+          name: pi.metadata.customer_name || '',
+          address: pi.metadata.job_address || '',
+        }, index);
+        job = m.job; how = m.how; candidates = m.candidates;
+      }
+
+      const base = pi.metadata.base_amount_cents ? Number(pi.metadata.base_amount_cents) : pi.amount;
+      rows.push({
+        kind: 'payment',
+        id: pi.id,
+        number: null,
+        amountCents: pi.amount,       // gross, surcharge included
+        baseAmountCents: base,        // what actually pays down the job
+        status: pi.status,
+        customerName: pi.metadata.customer_name || '',
+        customerEmail: (pi.customer && pi.customer.email) || pi.receipt_email || '',
+        address: pi.metadata.job_address || '',
+        createdAt: pi.created ? new Date(pi.created * 1000).toISOString() : null,
+        matchedBy: how,
+        mondayItemId: job ? String(job.id) : null,
+        mondayJobName: job ? job.name : null,
+        milestone: pi.metadata.sunatto_payment_type || null,
+        outcome: job ? 'will_tag' : 'needs_a_person',
+        why: job ? null : (candidates.length
+          ? `${candidates.length} jobs on the board fit this equally well.`
+          : 'Nothing on the board matches this payer.'),
+        candidates: candidates.map((c) => ({ id: String(c.id), name: c.name, address: c.address })),
+      });
+    }
+    if (!batch.has_more) break;
+    startingAfter = batch.data[batch.data.length - 1].id;
+    page += 1;
+  }
+
+  const willTag = rows.filter((r) => r.outcome === 'will_tag');
+  return {
+    rows,
+    summary: {
+      total: rows.length,
+      willTag: willTag.length,
+      needsAPerson: rows.length - willTag.length,
+      invoices: rows.filter((r) => r.kind === 'invoice').length,
+      payments: rows.filter((r) => r.kind === 'payment').length,
+    },
+  };
+}
+
+// Dry run. Deliberately a GET so it can never be the thing that changed
+// something — you can hit this as often as you like.
+app.get('/api/backfill-tags', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  if (!isUserAdmin(user)) return res.status(403).json({ error: 'Admins only.' });
+  try {
+    res.json(await buildBackfillReport());
+  } catch (err) {
+    console.error('backfill report error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Applies the tags. Additive only: it writes two metadata keys and touches
+// nothing else — no amounts, no statuses, no due dates. Pass { only: [id] }
+// to apply a single row rather than everything at once.
+app.post('/api/backfill-tags', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  if (!isUserAdmin(user)) return res.status(403).json({ error: 'Admins only.' });
+  try {
+    const { rows } = await buildBackfillReport();
+    const only = Array.isArray(req.body && req.body.only) ? new Set(req.body.only) : null;
+    const target = rows.filter((r) => r.outcome === 'will_tag' && (!only || only.has(r.id)));
+
+    const tagged = [];
+    const failed = [];
+    for (const r of target) {
+      try {
+        const metadata = {
+          monday_item_id: r.mondayItemId,
+          sunatto_milestone: r.milestone || 'custom',
+          // Stamped so a later reader can tell a tag that was worked out
+          // after the fact from one recorded at the moment of payment.
+          sunatto_tagged_by: 'backfill',
+          sunatto_tagged_how: r.matchedBy || '',
+        };
+        if (r.kind === 'invoice') await stripe.invoices.update(r.id, { metadata });
+        else await stripe.paymentIntents.update(r.id, { metadata });
+        tagged.push({ id: r.id, kind: r.kind, mondayItemId: r.mondayItemId, how: r.matchedBy });
+      } catch (e) {
+        // One bad object must not abandon the rest half-done.
+        failed.push({ id: r.id, kind: r.kind, error: e.message });
+      }
+    }
+    res.json({ ok: true, taggedCount: tagged.length, failedCount: failed.length, tagged, failed });
+  } catch (err) {
+    console.error('backfill apply error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Publishable key + Stripe account-level config the frontend needs.
 // mapboxAccessToken (optional) enables address autocomplete on
 // intake.html — it's a Mapbox *public* access token (starts with `pk.`),
