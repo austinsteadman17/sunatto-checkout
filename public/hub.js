@@ -1883,13 +1883,30 @@ function renderJobs() {
       (j.email || '').toLowerCase().includes(q));
   }
 
-  // Jobs with money outstanding first, largest first — that's the working
-  // order. Settled ones sink; jobs with no Total Cost float to the top of
-  // the unsettled pile because they're blocking.
+  // Order by how much it needs a person, not by size alone. The first cut of
+  // this sorted missing-Total-Cost to the very top, which filled the opening
+  // screen with empty jobs nobody has invoiced yet — noise, not work.
+  //
+  //   0  money has moved but the board has no Total Cost — actively wrong
+  //   1  owes money — the collections list
+  //   2  settled — keep visible, but below the work
+  //   3  nothing requested yet — real jobs, just not started
+  //   4  nothing requested AND no Total Cost — dormant and incomplete
   rows = rows.slice().sort((a, b) => {
-    const ra = a.needsTotalCost ? Infinity : (a.remainingCents || 0);
-    const rb = b.needsTotalCost ? Infinity : (b.remainingCents || 0);
-    return rb - ra;
+    const rank = (j) => {
+      const active = j.payments.length || j.openInvoices.length || j.reconciledCents;
+      if (active && j.needsTotalCost) return 0;
+      if (active && j.remainingCents > 0) return 1;
+      if (active) return 2;
+      return j.needsTotalCost ? 4 : 3;
+    };
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    // Within a band, biggest number first — largest outstanding, or for the
+    // idle bands the biggest contract, since that's what's worth chasing.
+    const size = (j) => (j.remainingCents != null ? j.remainingCents : (j.totalCostCents || 0));
+    return size(b) - size(a);
   });
 
   jobsList.innerHTML = rows.length
