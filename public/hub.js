@@ -1695,6 +1695,211 @@ if (reconcileButton) {
   });
 }
 
+// --- Backfill: link older money to its job ------------------------------
+//
+// Everything paid before 4 Aug 2026 has no job label on it, so a job's
+// history can't be totalled without guessing. This screen does the working
+// out, SHOWS it, and only writes what you approve. Nothing here moves
+// money — it only writes a label saying which job a payment was for.
+const backfillButton = document.getElementById('backfill-button');
+const backfillPanel = document.getElementById('backfill-panel');
+
+// The match reason in plain words. Anyone approving these should be able to
+// tell a certainty from a guess without knowing how the matcher works.
+function backfillReason(r) {
+  if (r.outcome !== 'will_tag') return r.why || 'Could not work this one out.';
+  switch (r.matchedBy) {
+    case 'link_record':
+      return 'This payment came from a link that already recorded its job — no guessing involved.';
+    case 'email_and_address':
+      return 'The email address and the job address both point to this same job.';
+    case 'email':
+      return 'This email address belongs to exactly one job on the board.';
+    case 'address':
+      return 'This address belongs to exactly one job on the board.';
+    case 'name_address':
+      return 'The customer name and address together match exactly one job.';
+    default:
+      return 'Matched to exactly one job on the board.';
+  }
+}
+
+function backfillRowHtml(r, i) {
+  const confident = r.outcome === 'will_tag';
+  const what = r.kind === 'invoice'
+    ? `Invoice ${r.number ? escapeHtml(r.number) : ''}`.trim()
+    : 'Payment link';
+
+  // Gross vs base again: a card payment of $7,992.80 only pays off $7,760.
+  // Showing one number without the other is what caused two of this week's
+  // confusions, so show both whenever the surcharge made them differ.
+  const gross = r.amountCents;
+  const base = (r.baseAmountCents != null) ? r.baseAmountCents : r.amountCents;
+  const amt = (base === gross)
+    ? fmtMoney(gross)
+    : `${fmtMoney(gross)} charged · ${fmtMoney(base)} toward the job`;
+
+  const when = r.createdAt ? fmtDateShort(r.createdAt) : '';
+  const milestoneLabel = r.milestone === 'deposit' ? '20% Deposit'
+    : r.milestone === 'balance' ? '80% Balance'
+    : r.milestone === 'full' ? 'Paid in full'
+    : 'Custom';
+
+  let target = '';
+  if (confident) {
+    target = `
+      <div class="cust-sub" style="margin-top:8px;"><strong>Would be labelled as:</strong></div>
+      <div class="cust-sub">${escapeHtml(r.mondayJobName || '(unnamed job)')} · ${escapeHtml(milestoneLabel)}</div>`;
+  } else if (r.candidates && r.candidates.length) {
+    // Deliberately NOT selectable. These are the cases where the board itself
+    // is ambiguous — three jobs sharing an email, say — and picking one here
+    // would just move the guess from the computer to you. Fix the board.
+    const list = r.candidates.map((c) => `
+      <div class="cust-sub">• ${escapeHtml(c.name || '(no name)')}${c.address ? ' — ' + escapeHtml(c.address) : ''}</div>`).join('');
+    target = `
+      <div class="cust-sub" style="margin-top:8px;"><strong>Jobs it could be:</strong></div>
+      ${list}
+      <div class="cust-sub" style="margin-top:6px;">Give these jobs distinct addresses or emails on the board, then run this again.</div>`;
+  }
+
+  return `
+    <div class="selected-job-banner" style="display:block; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
+        <div style="min-width:0;">
+          <div class="cust-name">${escapeHtml(r.customerName || r.customerEmail || r.id)}</div>
+          <span class="badge ${confident ? 'paid' : 'awaiting'}">${confident ? 'Ready to label' : 'Needs your help'}</span>
+        </div>
+        ${confident ? `<button type="button" class="secondary bf-apply" data-i="${i}" data-id="${escapeHtml(r.id)}">Label it</button>` : ''}
+      </div>
+      <div class="cust-sub"><strong>${escapeHtml(what)}:</strong> ${amt}${when ? ' · ' + when : ''}</div>
+      ${r.customerEmail ? `<div class="cust-sub">${escapeHtml(r.customerEmail)}</div>` : ''}
+      ${r.address ? `<div class="cust-sub">${escapeHtml(r.address)}</div>` : ''}
+      <div class="cust-sub" style="margin-top:8px; font-style:italic;">${escapeHtml(backfillReason(r))}</div>
+      ${target}
+      <div class="cust-sub bf-result" data-i="${i}" style="margin-top:6px;"></div>
+    </div>`;
+}
+
+function renderBackfillPreview(data) {
+  const s = data.summary;
+  // Confident ones first — that's the pile you can clear in one click, and
+  // burying it under the problem cases makes the screen feel worse than it is.
+  const ordered = data.rows.slice().sort((a, b) => {
+    if (a.outcome === b.outcome) return 0;
+    return a.outcome === 'will_tag' ? -1 : 1;
+  });
+
+  backfillPanel.style.display = 'block';
+  backfillPanel.innerHTML = `
+    <label class="field-label">Link history to jobs</label>
+    <p class="cust-sub" style="margin-bottom:12px;">
+      ${s.total} item(s) carry no job label — ${s.invoices} invoice(s) and ${s.payments} payment(s).
+      ${s.willTag} can be worked out for certain${s.needsAPerson ? `, ${s.needsAPerson} need a person to settle` : ''}.
+      Nothing changes until you approve it, and this only writes a label — no amounts or statuses are touched.
+    </p>
+    ${s.willTag ? `
+      <div class="panel-actions" style="margin-bottom:12px;">
+        <button type="button" class="primary" id="backfill-apply-all">Label all ${s.willTag} certain ones</button>
+      </div>` : ''}
+    ${ordered.map((r, i) => backfillRowHtml(r, i)).join('')}
+    <div class="panel-actions">
+      <button type="button" class="secondary" id="backfill-dismiss">Close</button>
+    </div>`;
+
+  backfillPanel.querySelectorAll('.bf-apply').forEach((btn) => {
+    btn.addEventListener('click', () => backfillApplyOne(btn));
+  });
+  const applyAll = document.getElementById('backfill-apply-all');
+  if (applyAll) applyAll.addEventListener('click', () => backfillApplyAll(applyAll));
+  document.getElementById('backfill-dismiss').addEventListener('click', () => {
+    backfillPanel.style.display = 'none';
+  });
+}
+
+// One row at a time. The server re-derives the match from scratch and only
+// acts on the id passed in, so a stale screen can't cause a wrong write.
+async function backfillApplyOne(btn) {
+  const i = btn.getAttribute('data-i');
+  const id = btn.getAttribute('data-id');
+  const out = backfillPanel.querySelector(`.bf-result[data-i="${i}"]`);
+  btn.textContent = 'Labelling…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/backfill-tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ only: [id] }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not label this one.');
+    if (data.taggedCount) {
+      btn.textContent = 'Labelled';
+      out.textContent = 'Linked to its job in Stripe.';
+    } else {
+      const why = (data.failed && data.failed[0] && data.failed[0].error) || 'Nothing was changed.';
+      btn.textContent = 'Label it';
+      btn.disabled = false;
+      out.textContent = why;
+    }
+  } catch (err) {
+    btn.textContent = 'Label it';
+    btn.disabled = false;
+    out.textContent = err.message;
+  }
+}
+
+// Everything the matcher was certain about, in one go. The ambiguous rows are
+// untouched by this — the server only ever acts on its own confident set.
+async function backfillApplyAll(btn) {
+  const original = btn.textContent;
+  btn.textContent = 'Labelling…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/backfill-tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not label these.');
+    await showConfirmModal({
+      title: 'Done',
+      message: `Linked ${data.taggedCount} item(s) to their jobs.` +
+        (data.failedCount ? ` ${data.failedCount} could not be written and were left alone.` : ''),
+      confirmLabel: 'OK',
+    });
+    if (backfillButton) backfillButton.click(); // re-run the dry run to show what's left
+  } catch (err) {
+    btn.textContent = original;
+    btn.disabled = false;
+    await showConfirmModal({ title: 'Could not label these', message: err.message, confirmLabel: 'OK', danger: true });
+  }
+}
+
+if (backfillButton) {
+  backfillButton.addEventListener('click', async () => {
+    const original = 'Link history to jobs';
+    backfillButton.textContent = 'Working it out…';
+    backfillButton.disabled = true;
+    try {
+      const res = await fetch('/api/backfill-tags', { headers: { 'X-Hub-Session': getSessionToken() } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not check the history.');
+      if (!data.rows.length) {
+        backfillPanel.style.display = 'block';
+        backfillPanel.innerHTML = '<label class="field-label">Link history to jobs</label><p class="cust-sub">Every invoice and payment already knows which job it belongs to.</p>';
+      } else {
+        renderBackfillPreview(data);
+      }
+    } catch (err) {
+      await showConfirmModal({ title: 'Could not check the history', message: err.message, confirmLabel: 'OK', danger: true });
+    } finally {
+      backfillButton.textContent = original;
+      backfillButton.disabled = false;
+    }
+  });
+}
+
 // --- Light / dark theme toggle -------------------------------------------
 //
 // sunatto.css reads a data-theme attribute on <html>. With nothing set it
