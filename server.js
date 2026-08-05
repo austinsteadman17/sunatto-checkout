@@ -1018,6 +1018,12 @@ const MONDAY_TOTAL_COST_COLUMN_ID = 'numeric_mkrw6pqv';
 // cheque, a discount, a write-off. Deliberately separate from collected:
 // you did not receive this money, you absorbed it, and conflating the two
 // makes "how much have reps covered this quarter" unanswerable.
+// Who is actually paying: a lender, or the homeowner. Only 'Cash' deals
+// are collected through this system at all — on financed deals the lender
+// pays SED directly, so those jobs have no balance to chase and only make
+// the Jobs screen noisier.
+const MONDAY_FINANCED_BY_COLUMN_ID = 'color_mkrwsx3s';
+const CASH_DEAL_LABEL = 'Cash';
 const MONDAY_RECONCILED_AMOUNT_COLUMN_ID = 'numeric_mm5xdy1s';
 const MONDAY_RECONCILIATION_NOTES_COLUMN_ID = 'long_text_mm5xesz6';
 
@@ -1037,7 +1043,7 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
   if (!isAdmin && !targetName) return [];
 
   const peopleColumnIds = [MONDAY_SALES_REP_COLUMN_ID, MONDAY_OFFICE_COLUMN_ID, MONDAY_MANAGER_COLUMN_ID];
-  const contactColumnIds = [MONDAY_ADDRESS_COLUMN_ID, MONDAY_EMAIL_COLUMN_ID, MONDAY_PHONE_COLUMN_ID, MONDAY_TOTAL_COST_COLUMN_ID, MONDAY_RECONCILED_AMOUNT_COLUMN_ID, MONDAY_RECONCILIATION_NOTES_COLUMN_ID];
+  const contactColumnIds = [MONDAY_ADDRESS_COLUMN_ID, MONDAY_EMAIL_COLUMN_ID, MONDAY_PHONE_COLUMN_ID, MONDAY_TOTAL_COST_COLUMN_ID, MONDAY_RECONCILED_AMOUNT_COLUMN_ID, MONDAY_RECONCILIATION_NOTES_COLUMN_ID, MONDAY_FINANCED_BY_COLUMN_ID];
   const allColumnIds = [...contactColumnIds, ...peopleColumnIds];
   let cursor = null;
   const jobs = [];
@@ -1086,6 +1092,7 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
           totalCostCents: Number.isFinite(totalCost) ? Math.round(totalCost * 100) : null,
           reconciledCents: Number.isFinite(reconciled) ? Math.round(reconciled * 100) : 0,
           reconciliationNotes: values[MONDAY_RECONCILIATION_NOTES_COLUMN_ID] || '',
+          financedBy: values[MONDAY_FINANCED_BY_COLUMN_ID] || '',
           // The Monday board group (e.g. "Installed - Review/Corrections")
           // this item currently sits in — surfaced in the hub as "Monday
           // Status" so staff can see pipeline stage without opening Monday.
@@ -3725,13 +3732,30 @@ async function buildJobsReport(user, admin) {
     });
   }
 
+  // Only cash deals belong on this screen. On a financed deal the lender
+  // pays SED directly — there is no homeowner balance to collect, so those
+  // jobs would sit here forever showing money that is never coming through
+  // Stripe. Payments are still attributed to them above, so nothing is lost
+  // from the verification totals.
+  const cashJobs = jobs.filter((j) => (j.financedBy || '') === CASH_DEAL_LABEL);
+
+  // Attribution is measured across EVERY job, not just the cash ones shown
+  // below. Otherwise hiding financed jobs would make their payments look
+  // like missing money and the verification line would cry wolf.
   let attributedGross = 0;
-  const out = jobs.map((j) => {
+  let financedGross = 0;
+  for (const j of jobs) {
+    const ps = attributed.get(String(j.id)) || [];
+    const g = ps.reduce((sum, p) => sum + p.grossCents, 0);
+    attributedGross += g;
+    if ((j.financedBy || '') !== CASH_DEAL_LABEL) financedGross += g;
+  }
+
+  const out = cashJobs.map((j) => {
     const key = String(j.id);
     const payments = (attributed.get(key) || []).sort((a, b) => String(a.paidAt).localeCompare(String(b.paidAt)));
     const collectedBase = payments.reduce((s, p) => s + p.baseCents, 0);
     const collectedGross = payments.reduce((s, p) => s + p.grossCents, 0);
-    attributedGross += collectedGross;
 
     const total = j.totalCostCents;
     const reconciled = j.reconciledCents || 0;
@@ -3775,6 +3799,11 @@ async function buildJobsReport(user, admin) {
       attributedGrossCents: attributedGross,
       unattributedGrossCents: orphanGross,
       accountedForCents: attributedGross + orphanGross,
+      // Money that IS attributed, but to a financed job we don't list. Shown
+      // so the totals visibly reconcile instead of appearing to lose money.
+      financedJobGrossCents: financedGross,
+      cashJobCount: cashJobs.length,
+      hiddenJobCount: jobs.length - cashJobs.length,
       balances: (attributedGross + orphanGross) === grossAll,
       // Only meaningful for admins; a rep sees their own jobs, so their
       // attributed total legitimately won't reach Stripe's grand total.
@@ -3790,6 +3819,77 @@ app.get('/api/jobs', async (req, res) => {
     res.json(await buildJobsReport(user, isUserAdmin(user)));
   } catch (err) {
     console.error('jobs report error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Attaches a payment Stripe took to the job it actually belongs to, by hand.
+//
+// The matcher only ever acts when the evidence is unambiguous, which is
+// correct — but it leaves a residue no algorithm can settle. Bonnie Canesso
+// paid for her husband Steve's job: no name, email or address on that
+// payment will ever match the board, because the board is right and so is
+// she. Only a person knows they're married.
+//
+// This writes the same two metadata keys the backfill writes, so a payment
+// linked by hand is indistinguishable downstream from one tagged at source.
+// Nothing about the money changes — only which job claims it.
+app.post('/api/link-payment', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  if (!isUserAdmin(user)) return res.status(403).json({ error: 'Admins only.' });
+  try {
+    const { paymentIntentId, mondayItemId, milestone } = req.body || {};
+    if (!paymentIntentId || !mondayItemId) {
+      return res.status(400).json({ error: 'A payment and a job are both required.' });
+    }
+
+    // Verify the job exists before pointing money at it — a typo'd id would
+    // otherwise create a payment attributed to a job that isn't there, which
+    // is worse than leaving it unattributed.
+    const job = await fetchMondayItemById(String(mondayItemId));
+    if (!job) return res.status(404).json({ error: 'That job is not on the board.' });
+
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (!pi) return res.status(404).json({ error: 'That payment is not in Stripe.' });
+    if (pi.status !== 'succeeded') {
+      return res.status(400).json({ error: 'Only settled payments can be linked to a job.' });
+    }
+    // Refuse to silently move money that already has a home. Re-pointing an
+    // attributed payment should be a deliberate, separate act.
+    if (pi.metadata && pi.metadata.monday_item_id) {
+      return res.status(409).json({
+        error: 'That payment is already linked to a job. Unlink it in Stripe first if it is wrong.',
+      });
+    }
+
+    await stripe.paymentIntents.update(paymentIntentId, {
+      metadata: {
+        monday_item_id: String(mondayItemId),
+        sunatto_milestone: milestone || 'custom',
+        sunatto_tagged_by: 'linked_by_hand',
+        sunatto_tagged_how: fullNameOf(user),
+      },
+    });
+
+    // Leave a trail on the board. Someone looking at this job in six months
+    // should be able to see that a payment under a different name was
+    // attached to it deliberately, and by whom.
+    const dollars = (pi.amount / 100).toFixed(2);
+    const payer = (pi.metadata && pi.metadata.customer_name) || pi.receipt_email || 'an unnamed payer';
+    try {
+      await postMondayComment(
+        String(mondayItemId),
+        `A $${dollars} payment from ${payer} was linked to this job by ${fullNameOf(user)} via the Payment Links Hub. Stripe payment ${paymentIntentId}.`
+      );
+    } catch (noteErr) {
+      // The link is the important part; a failed note must not undo it.
+      console.warn('link-payment: could not post Monday note:', noteErr.message);
+    }
+
+    res.json({ ok: true, paymentIntentId, mondayItemId: String(mondayItemId), jobName: job.name || '' });
+  } catch (err) {
+    console.error('link-payment error:', err);
     res.status(500).json({ error: err.message });
   }
 });
