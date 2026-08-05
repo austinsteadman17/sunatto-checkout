@@ -497,6 +497,7 @@ function showLogin() {
   generateView.style.display = 'none';
   adminView.style.display = 'none';
   invoicesView.style.display = 'none';
+  jobsView.style.display = 'none';
   loginView.style.display = 'block';
 }
 
@@ -505,6 +506,7 @@ function showHub() {
   generateView.style.display = 'none';
   adminView.style.display = 'none';
   invoicesView.style.display = 'none';
+  jobsView.style.display = 'none';
   hubView.style.display = 'block';
 }
 
@@ -513,6 +515,7 @@ function showGenerate() {
   hubView.style.display = 'none';
   adminView.style.display = 'none';
   invoicesView.style.display = 'none';
+  jobsView.style.display = 'none';
   generateView.style.display = 'block';
 }
 
@@ -521,6 +524,7 @@ function showAdmin() {
   hubView.style.display = 'none';
   generateView.style.display = 'none';
   invoicesView.style.display = 'none';
+  jobsView.style.display = 'none';
   adminView.style.display = 'block';
 }
 
@@ -529,6 +533,7 @@ function showInvoices() {
   hubView.style.display = 'none';
   generateView.style.display = 'none';
   adminView.style.display = 'none';
+  jobsView.style.display = 'none';
   invoicesView.style.display = 'block';
 }
 
@@ -1693,6 +1698,234 @@ if (reconcileButton) {
       reconcileButton.disabled = false;
     }
   });
+}
+
+// --- Jobs view: one card per job, not one row per request ----------------
+//
+// The question this screen exists to answer is "how much is left on this
+// job?" — which neither Stripe nor Monday can answer alone. Stripe knows
+// three charges happened; it has no idea they sum against $18,500. Monday
+// knows the $18,500; it never sees the money.
+//
+// Nothing here is stored. Every figure is recomputed from both systems on
+// each load, so this screen cannot drift out of agreement with either.
+const jobsView = document.getElementById('jobs-view');
+const jobsNavButton = document.getElementById('jobs-nav-button');
+const jobsRefreshButton = document.getElementById('jobs-refresh-button');
+const jobsBackButton = document.getElementById('back-to-invoices-from-jobs-button');
+const jobsList = document.getElementById('jobs-list');
+const jobsVerification = document.getElementById('jobs-verification');
+const jobsUnattributed = document.getElementById('jobs-unattributed');
+const jobsSearch = document.getElementById('jobs-search');
+
+let jobsData = null;
+
+function showJobs() {
+  loginView.style.display = 'none';
+  hubView.style.display = 'none';
+  generateView.style.display = 'none';
+  adminView.style.display = 'none';
+  invoicesView.style.display = 'none';
+  jobsView.style.display = 'block';
+}
+
+const MILESTONE_LABEL = {
+  deposit: '20% Deposit',
+  balance: '80% Balance',
+  full: 'Paid in full',
+  custom: 'Custom',
+};
+
+// A payment line. Always shows what was charged AND what it put toward the
+// job when the 3% card surcharge made those differ — reporting one without
+// the other is what made a settled-looking job still owe $1,040.
+function jobPaymentHtml(p) {
+  const label = MILESTONE_LABEL[p.milestone] || 'Custom';
+  const money = p.baseCents === p.grossCents
+    ? fmtMoney(p.baseCents)
+    : `${fmtMoney(p.baseCents)} <span class="cust-sub" style="display:inline;">(${fmtMoney(p.grossCents)} charged inc. surcharge)</span>`;
+  return `
+    <div class="cust-sub" style="display:flex; gap:8px; align-items:baseline;">
+      <span style="color:var(--brand-ink);">✓</span>
+      <span style="flex:1;">${escapeHtml(label)}${p.method ? ' · ' + escapeHtml(p.method) : ''}</span>
+      <span>${money}</span>
+      <a href="${escapeHtml(p.stripeUrl)}" target="_blank" rel="noopener" class="chip-link">Stripe</a>
+    </div>
+    <div class="cust-sub" style="margin-left:18px;">paid ${p.paidAt ? fmtDateShort(p.paidAt) : 'date unknown'}</div>`;
+}
+
+function jobOpenInvoiceHtml(inv) {
+  const label = MILESTONE_LABEL[inv.milestone] || 'Custom';
+  const overdue = inv.dueDate && new Date(inv.dueDate) < new Date();
+  return `
+    <div class="cust-sub" style="display:flex; gap:8px; align-items:baseline;">
+      <span style="color:var(--muted-foreground);">⧗</span>
+      <span style="flex:1;">${escapeHtml(label)} — invoice ${inv.number ? escapeHtml(inv.number) : ''} ${overdue ? '<span class="badge overdue">Past due</span>' : '<span class="badge awaiting">Awaiting</span>'}</span>
+      <span>${fmtMoney(inv.amountCents)}</span>
+      <a href="${escapeHtml(inv.stripeUrl)}" target="_blank" rel="noopener" class="chip-link">Stripe</a>
+    </div>`;
+}
+
+function jobCardHtml(j) {
+  // The headline. A job with no Total Cost on the board genuinely cannot
+  // have a balance — say so rather than printing a confident zero.
+  let headline;
+  if (j.needsTotalCost) {
+    headline = `<span class="badge overdue">No Total Cost on the board</span>`;
+  } else if (j.remainingCents === 0) {
+    headline = `<span class="badge paid">Settled</span>`;
+  } else if (j.remainingCents < 0) {
+    headline = `<strong>${fmtMoney(Math.abs(j.remainingCents))} overpaid</strong> <span class="cust-sub" style="display:inline;">of ${fmtMoney(j.totalCostCents)}</span>`;
+  } else {
+    headline = `<strong>${fmtMoney(j.remainingCents)} left</strong> <span class="cust-sub" style="display:inline;">of ${fmtMoney(j.totalCostCents)}</span>`;
+  }
+
+  const lines = [
+    ...j.payments.map(jobPaymentHtml),
+    ...j.openInvoices.map(jobOpenInvoiceHtml),
+  ].join('');
+
+  const reconciled = j.reconciledCents
+    ? `<div class="cust-sub" style="display:flex; gap:8px; align-items:baseline;">
+         <span style="color:var(--muted-foreground);">↺</span>
+         <span style="flex:1;">Settled without a payment${j.reconciliationNotes ? ' — ' + escapeHtml(j.reconciliationNotes) : ''}</span>
+         <span>${fmtMoney(j.reconciledCents)}</span>
+       </div>`
+    : '';
+
+  const nothingYet = (!j.payments.length && !j.openInvoices.length && !j.reconciledCents)
+    ? '<div class="cust-sub" style="font-style:italic;">Nothing has been requested or collected for this job yet.</div>'
+    : '';
+
+  return `
+    <div class="selected-job-banner" style="display:block; margin-bottom:12px;">
+      <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:8px;">
+        <div style="min-width:0;">
+          <div class="cust-name">${escapeHtml(j.name || '(unnamed job)')}</div>
+          <div class="cust-sub">${escapeHtml(j.address || 'no address on the board')}</div>
+          ${j.groupTitle ? `<div class="cust-sub">${escapeHtml(j.groupTitle)}</div>` : ''}
+        </div>
+        <div style="text-align:right; white-space:nowrap;">
+          <div>${headline}</div>
+          <a href="${escapeHtml(j.mondayUrl)}" target="_blank" rel="noopener" class="chip-link">Open in Monday</a>
+        </div>
+      </div>
+      ${lines}
+      ${reconciled}
+      ${nothingYet}
+    </div>`;
+}
+
+// Money Stripe took that no job claims. Shown loudly and near the top of
+// mind rather than logged and forgotten — a silent skip here is exactly how
+// Bonnie Canesso's $5,300 sat unnoticed for a week after it had cleared.
+function renderUnattributed(rows) {
+  if (!rows.length) {
+    jobsUnattributed.innerHTML = '';
+    return;
+  }
+  const total = rows.reduce((s, r) => s + r.grossCents, 0);
+  jobsUnattributed.innerHTML = `
+    <div class="create-user-card" style="margin-top:16px;">
+      <label class="field-label">Money not linked to any job — ${fmtMoney(total)}</label>
+      <p class="cust-sub" style="margin-bottom:12px;">
+        Stripe took this money but nothing tells us which job it belongs to, so it isn't
+        counted in any balance above. Each one says what to do about it.
+      </p>
+      ${rows.map((r) => `
+        <div class="selected-job-banner" style="display:block; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
+            <div style="min-width:0;">
+              <div class="cust-name">${escapeHtml(r.customerName || r.customerEmail || r.id)}</div>
+              <div class="cust-sub">${escapeHtml(r.customerEmail || '')}</div>
+            </div>
+            <div style="text-align:right; white-space:nowrap;">
+              <div><strong>${fmtMoney(r.grossCents)}</strong></div>
+              <a href="${escapeHtml(r.stripeUrl)}" target="_blank" rel="noopener" class="chip-link">Open in Stripe</a>
+            </div>
+          </div>
+          <div class="cust-sub" style="margin-top:6px;">paid ${r.paidAt ? fmtDateShort(r.paidAt) : 'date unknown'}${r.method ? ' · ' + escapeHtml(r.method) : ''}</div>
+          <div class="cust-sub" style="margin-top:6px; font-style:italic;">${escapeHtml(r.why)}</div>
+          <div class="cust-sub"><strong>What to do:</strong> ${escapeHtml(r.fix)}</div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function renderJobs() {
+  if (!jobsData) return;
+  const v = jobsData.verification;
+
+  // The honesty check, stated plainly. If the books don't balance, say so
+  // before showing a single figure — every number below would be suspect.
+  if (v.scopedToUser) {
+    jobsVerification.innerHTML = `<div class="subtitle">Showing the jobs you're attached to on the Monday board.</div>`;
+  } else if (v.balances) {
+    jobsVerification.innerHTML = `
+      <div class="subtitle">
+        Every dollar Stripe has taken is accounted for: ${fmtMoney(v.stripeSucceededGrossCents)} collected,
+        ${fmtMoney(v.attributedGrossCents)} linked to a job${v.unattributedGrossCents ? `, ${fmtMoney(v.unattributedGrossCents)} not yet linked (listed below)` : ''}.
+      </div>`;
+  } else {
+    jobsVerification.innerHTML = `
+      <div class="error-message" style="display:block;">
+        These figures don't balance — Stripe reports ${fmtMoney(v.stripeSucceededGrossCents)} collected
+        but only ${fmtMoney(v.accountedForCents)} can be accounted for. Don't rely on the balances below
+        until this is looked at.
+      </div>`;
+  }
+
+  const q = (jobsSearch.value || '').trim().toLowerCase();
+  let rows = jobsData.jobs;
+  if (q) {
+    rows = rows.filter((j) =>
+      (j.name || '').toLowerCase().includes(q) ||
+      (j.address || '').toLowerCase().includes(q) ||
+      (j.email || '').toLowerCase().includes(q));
+  }
+
+  // Jobs with money outstanding first, largest first — that's the working
+  // order. Settled ones sink; jobs with no Total Cost float to the top of
+  // the unsettled pile because they're blocking.
+  rows = rows.slice().sort((a, b) => {
+    const ra = a.needsTotalCost ? Infinity : (a.remainingCents || 0);
+    const rb = b.needsTotalCost ? Infinity : (b.remainingCents || 0);
+    return rb - ra;
+  });
+
+  jobsList.innerHTML = rows.length
+    ? rows.map(jobCardHtml).join('')
+    : '<div class="cust-sub" style="padding:12px 0;">No jobs match that search.</div>';
+
+  renderUnattributed(jobsData.unattributed || []);
+}
+
+async function loadJobs() {
+  jobsList.innerHTML = '<div class="cust-sub" style="padding:12px 0;">Working out where every job stands…</div>';
+  jobsVerification.innerHTML = '';
+  jobsUnattributed.innerHTML = '';
+  try {
+    const res = await fetch('/api/jobs', { headers: { 'X-Hub-Session': getSessionToken() } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load jobs.');
+    jobsData = data;
+    renderJobs();
+  } catch (err) {
+    jobsList.innerHTML = '';
+    jobsVerification.innerHTML = `<div class="error-message" style="display:block;">${escapeHtml(err.message)}</div>`;
+  }
+}
+
+if (jobsNavButton) {
+  jobsNavButton.addEventListener('click', () => { showJobs(); loadJobs(); });
+}
+if (jobsRefreshButton) {
+  jobsRefreshButton.addEventListener('click', () => loadJobs());
+}
+if (jobsBackButton) {
+  jobsBackButton.addEventListener('click', () => { showInvoices(); });
+}
+if (jobsSearch) {
+  jobsSearch.addEventListener('input', () => renderJobs());
 }
 
 // --- Backfill: link older money to its job ------------------------------
