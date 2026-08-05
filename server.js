@@ -1014,6 +1014,12 @@ app.post('/api/hub/change-pin', async (req, res) => {
 const MONDAY_EMAIL_COLUMN_ID = 'email_mks09rsp';
 const MONDAY_PHONE_COLUMN_ID = 'phone_mkrwp33a';
 const MONDAY_TOTAL_COST_COLUMN_ID = 'numeric_mkrw6pqv';
+// Money settled WITHOUT a customer payment — a rep covering a shortfall, a
+// cheque, a discount, a write-off. Deliberately separate from collected:
+// you did not receive this money, you absorbed it, and conflating the two
+// makes "how much have reps covered this quarter" unanswerable.
+const MONDAY_RECONCILED_AMOUNT_COLUMN_ID = 'numeric_mm5xdy1s';
+const MONDAY_RECONCILIATION_NOTES_COLUMN_ID = 'long_text_mm5xesz6';
 
 // Queries the Sunatto Pipeline 2026 board directly (bypassing
 // findMondayItem's single-match requirement above, since here we WANT
@@ -1031,7 +1037,7 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
   if (!isAdmin && !targetName) return [];
 
   const peopleColumnIds = [MONDAY_SALES_REP_COLUMN_ID, MONDAY_OFFICE_COLUMN_ID, MONDAY_MANAGER_COLUMN_ID];
-  const contactColumnIds = [MONDAY_ADDRESS_COLUMN_ID, MONDAY_EMAIL_COLUMN_ID, MONDAY_PHONE_COLUMN_ID, MONDAY_TOTAL_COST_COLUMN_ID];
+  const contactColumnIds = [MONDAY_ADDRESS_COLUMN_ID, MONDAY_EMAIL_COLUMN_ID, MONDAY_PHONE_COLUMN_ID, MONDAY_TOTAL_COST_COLUMN_ID, MONDAY_RECONCILED_AMOUNT_COLUMN_ID, MONDAY_RECONCILIATION_NOTES_COLUMN_ID];
   const allColumnIds = [...contactColumnIds, ...peopleColumnIds];
   let cursor = null;
   const jobs = [];
@@ -1070,6 +1076,7 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
 
       if (attached) {
         const totalCost = parseFloat(values[MONDAY_TOTAL_COST_COLUMN_ID] || '');
+        const reconciled = parseFloat(values[MONDAY_RECONCILED_AMOUNT_COLUMN_ID] || '');
         jobs.push({
           id: item.id,
           name: item.name,
@@ -1077,6 +1084,8 @@ async function getUserAttachedJobs(fullName, { isAdmin = false } = {}) {
           email: values[MONDAY_EMAIL_COLUMN_ID] || '',
           phone: values[MONDAY_PHONE_COLUMN_ID] || '',
           totalCostCents: Number.isFinite(totalCost) ? Math.round(totalCost * 100) : null,
+          reconciledCents: Number.isFinite(reconciled) ? Math.round(reconciled * 100) : 0,
+          reconciliationNotes: values[MONDAY_RECONCILIATION_NOTES_COLUMN_ID] || '',
           // The Monday board group (e.g. "Installed - Review/Corrections")
           // this item currently sits in — surfaced in the hub as "Monday
           // Status" so staff can see pipeline stage without opening Monday.
@@ -3587,6 +3596,200 @@ app.post('/api/backfill-tags', async (req, res) => {
     res.json({ ok: true, taggedCount: tagged.length, failedCount: failed.length, tagged, failed });
   } catch (err) {
     console.error('backfill apply error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------
+// 7a8. Jobs — the join. Stripe's money, Monday's contract, one answer.
+//
+// This is the endpoint the assessment argued for: the hub stores no money
+// of its own, it reads both systems and works out the thing neither can
+// answer alone — "how much is left on this job?"
+//
+//   Total owed     (Monday: Total Cost)
+//   − Collected    (Stripe: base amounts of succeeded payments)
+//   − Reconciled   (Monday: Reconciled Amount — rep covering, cheque, write-off)
+//   = Remaining
+//
+// One rule keeps the arithmetic honest: **count PaymentIntents, never
+// invoices.** Every payment is a PaymentIntent, whether it came from a
+// hosted invoice or the checkout page. Summing invoices AND payments would
+// double-count anything paid by invoice. Invoices are treated purely as
+// requests for money — some open, some settled — never as money itself.
+// ---------------------------------------------------------------------
+
+// Walks every succeeded PaymentIntent and works out which job it belongs
+// to. Invoice payments carry no tag of their own, so they inherit it from
+// the invoice they settled.
+async function collectAttributedPayments(invoicesById) {
+  const attributed = new Map(); // mondayItemId -> payment[]
+  const orphans = [];
+  let grossAll = 0;
+
+  let page = 0;
+  let startingAfter;
+  while (page < 10) {
+    const params = { limit: 100, expand: ['data.customer', 'data.latest_charge'] };
+    if (startingAfter) params.starting_after = startingAfter;
+    const batch = await stripe.paymentIntents.list(params);
+
+    for (const pi of batch.data) {
+      if (pi.status !== 'succeeded') continue;
+      grossAll += pi.amount;
+
+      // Base is what actually pays down the job. Card payments carry a 3%
+      // surcharge in pi.amount that belongs to Stripe, not to the balance.
+      // Invoice payments have no surcharge, so base and gross are the same.
+      const base = pi.metadata && pi.metadata.base_amount_cents
+        ? Number(pi.metadata.base_amount_cents)
+        : pi.amount;
+
+      let itemId = (pi.metadata && pi.metadata.monday_item_id) || '';
+      let milestone = (pi.metadata && (pi.metadata.sunatto_milestone || pi.metadata.sunatto_payment_type)) || '';
+      let via = itemId ? 'payment tag' : '';
+
+      // Paid by invoice: inherit the invoice's job.
+      if (!itemId && pi.invoice) {
+        const invId = typeof pi.invoice === 'string' ? pi.invoice : pi.invoice.id;
+        const inv = invoicesById.get(invId);
+        if (inv && inv.metadata && inv.metadata.monday_item_id) {
+          itemId = inv.metadata.monday_item_id;
+          milestone = inv.metadata.sunatto_milestone || inv.metadata.sunatto_invoice_kind || '';
+          via = 'invoice tag';
+        }
+      }
+
+      const row = {
+        id: pi.id,
+        grossCents: pi.amount,
+        baseCents: base,
+        milestone: milestone || 'custom',
+        paidAt: pi.created ? new Date(pi.created * 1000).toISOString() : null,
+        method: describeChargeMethod(pi.latest_charge),
+        customerName: (pi.metadata && pi.metadata.customer_name) || (pi.customer && pi.customer.name) || '',
+        customerEmail: (pi.customer && pi.customer.email) || pi.receipt_email || '',
+        stripeUrl: `https://dashboard.stripe.com/payments/${pi.id}`,
+        via,
+      };
+
+      if (itemId) {
+        const key = String(itemId);
+        if (!attributed.has(key)) attributed.set(key, []);
+        attributed.get(key).push(row);
+      } else {
+        // Money we cannot place. Never silently dropped — the old matcher
+        // logged a warning nobody read, which is how Bonnie's $5,300 went
+        // missing for a week. Everything here is shown and clickable.
+        orphans.push({
+          ...row,
+          why: pi.invoice
+            ? 'Paid against an invoice that has no job label yet. Run "Link history to jobs" in Admin.'
+            : 'This payment carries no job label and did not come from a labelled link.',
+          fix: 'Open it in Stripe to see who paid, then check that job exists on the board with this email or address.',
+        });
+      }
+    }
+    if (!batch.has_more) break;
+    startingAfter = batch.data[batch.data.length - 1].id;
+    page += 1;
+  }
+  return { attributed, orphans, grossAll };
+}
+
+async function buildJobsReport(user, admin) {
+  const [jobs, invoices] = await Promise.all([
+    getUserAttachedJobs(fullNameOf(user), { isAdmin: admin }),
+    listAllStripeInvoices(),
+  ]);
+
+  const invoicesById = new Map(invoices.map((i) => [i.id, i]));
+  const { attributed, orphans, grossAll } = await collectAttributedPayments(invoicesById);
+
+  // Open invoices, grouped by job, so a job card can show what's still owed
+  // as a request and not just as a number.
+  const openByJob = new Map();
+  for (const inv of invoices) {
+    if (inv.status !== 'open') continue;
+    const itemId = inv.metadata && inv.metadata.monday_item_id;
+    if (!itemId) continue;
+    const key = String(itemId);
+    if (!openByJob.has(key)) openByJob.set(key, []);
+    openByJob.get(key).push({
+      id: inv.id,
+      number: inv.number || null,
+      amountCents: inv.total,
+      dueDate: inv.due_date ? new Date(inv.due_date * 1000).toISOString() : null,
+      milestone: (inv.metadata && (inv.metadata.sunatto_milestone || inv.metadata.sunatto_invoice_kind)) || 'custom',
+      stripeUrl: `https://dashboard.stripe.com/invoices/${inv.id}`,
+    });
+  }
+
+  let attributedGross = 0;
+  const out = jobs.map((j) => {
+    const key = String(j.id);
+    const payments = (attributed.get(key) || []).sort((a, b) => String(a.paidAt).localeCompare(String(b.paidAt)));
+    const collectedBase = payments.reduce((s, p) => s + p.baseCents, 0);
+    const collectedGross = payments.reduce((s, p) => s + p.grossCents, 0);
+    attributedGross += collectedGross;
+
+    const total = j.totalCostCents;
+    const reconciled = j.reconciledCents || 0;
+    // A job with no Total Cost on the board can't have a remaining balance
+    // computed. Say so explicitly rather than quietly reporting a wrong
+    // number — Khurram Shezad sits at $0 and would otherwise read "settled".
+    const remaining = (total == null || total === 0)
+      ? null
+      : total - collectedBase - reconciled;
+
+    return {
+      mondayItemId: key,
+      name: j.name,
+      address: j.address,
+      email: j.email,
+      groupTitle: j.groupTitle,
+      mondayUrl: `https://monday.com/boards/${MONDAY_BOARD_ID}/pulses/${key}`,
+      totalCostCents: total,
+      collectedBaseCents: collectedBase,
+      collectedGrossCents: collectedGross,
+      reconciledCents: reconciled,
+      reconciliationNotes: j.reconciliationNotes || '',
+      remainingCents: remaining,
+      needsTotalCost: (total == null || total === 0),
+      payments,
+      openInvoices: openByJob.get(key) || [],
+    };
+  });
+
+  const orphanGross = orphans.reduce((s, o) => s + o.grossCents, 0);
+
+  return {
+    jobs: out,
+    unattributed: orphans.sort((a, b) => b.grossCents - a.grossCents),
+    // The proof the join is complete. Every dollar Stripe says it took must
+    // be either attributed to a job or sitting visibly in the unattributed
+    // pile. If these don't add up, something is being silently dropped and
+    // nothing downstream should be trusted.
+    verification: {
+      stripeSucceededGrossCents: grossAll,
+      attributedGrossCents: attributedGross,
+      unattributedGrossCents: orphanGross,
+      accountedForCents: attributedGross + orphanGross,
+      balances: (attributedGross + orphanGross) === grossAll,
+      // Only meaningful for admins; a rep sees their own jobs, so their
+      // attributed total legitimately won't reach Stripe's grand total.
+      scopedToUser: !admin,
+    },
+  };
+}
+
+app.get('/api/jobs', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    res.json(await buildJobsReport(user, isUserAdmin(user)));
+  } catch (err) {
+    console.error('jobs report error:', err);
     res.status(500).json({ error: err.message });
   }
 });
