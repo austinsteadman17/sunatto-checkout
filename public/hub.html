@@ -334,6 +334,48 @@
     </div>
   </div>
 
+  <!-- ============================ JOBS ============================
+       One card per job, not one row per request. This is the screen that
+       answers "how much is left on this job?" — a question neither Stripe
+       nor Monday can answer on its own. Every number here is computed live
+       from both; the hub stores none of it. -->
+  <div class="wrap" id="jobs-view" style="display:none;">
+    <div class="brand">
+      <img src="sed-logo.png" alt="Southern Energy Distributors" />
+      <span>Southern Energy Distributors</span>
+    </div>
+
+    <div class="card">
+      <div class="hub-header">
+        <div>
+          <div class="eyebrow">Payment Links Hub</div>
+          <h1>Jobs</h1>
+        </div>
+        <div class="header-actions">
+          <div class="action-group">
+            <button type="button" class="icon-btn icon-only" id="jobs-refresh-button" title="Refresh">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"></path><path d="M21 3v6h-6"></path></svg>
+            </button>
+            <button type="button" class="icon-btn back-btn" id="back-to-invoices-from-jobs-button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>
+              Back to Invoices
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- The proof that every dollar is accounted for. Filled by hub.js. -->
+      <div id="jobs-verification"></div>
+
+      <div class="search-row">
+        <input type="text" class="field-input" id="jobs-search" placeholder="Search a customer or address" autocomplete="off" />
+      </div>
+
+      <div id="jobs-list"></div>
+      <div id="jobs-unattributed"></div>
+    </div>
+  </div>
+
   <div class="wrap" id="invoices-view">
     <div class="brand">
       <img src="sed-logo.png" alt="Southern Energy Distributors" />
@@ -366,6 +408,10 @@
             <button type="button" class="icon-btn primary-action" id="generate-link-button">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
               Generate Link
+            </button>
+            <button type="button" class="icon-btn" id="jobs-nav-button" title="See every job with what's been collected and what's left">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"></path><path d="M5 21V7l7-4 7 4v14"></path><path d="M10 21v-6h4v6"></path></svg>
+              Jobs
             </button>
             <button type="button" class="icon-btn" id="voided-nav-button">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg>
