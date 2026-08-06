@@ -1940,22 +1940,33 @@ function renderUnconnectedLinks(rows) {
     jobsUnconnected.innerHTML = '';
     return;
   }
+  // Clearing first — that's the one where connecting NOW saves a cleanup
+  // later. Then unpaid, then already-paid (which needs a manual attribution).
+  const rank = (r) => (r.processing ? 0 : (!r.paid ? 1 : 2));
   const ordered = rows.slice().sort((a, b) => {
-    if (a.paid !== b.paid) return a.paid ? 1 : -1; // unpaid first
-    return (b.amountCents || 0) - (a.amountCents || 0);
+    const d = rank(a) - rank(b);
+    return d !== 0 ? d : (b.amountCents || 0) - (a.amountCents || 0);
   });
   const unpaidCount = ordered.filter((r) => !r.paid).length;
+  const clearingCount = ordered.filter((r) => r.processing).length;
 
   jobsUnconnected.innerHTML = `
     <div class="create-user-card" style="margin-top:16px;">
-      <label class="field-label">Payment links with no job yet — ${ordered.length}</label>
+      <label class="field-label">Not connected to a job yet — ${ordered.length}</label>
       <p class="cust-sub" style="margin-bottom:12px;">
         These were raised before the job existed on the Monday board. Once your rep has
         created the job properly, connect it here.
-        ${unpaidCount ? `<strong>${unpaidCount} of them hasn't been paid yet</strong> — connecting those now means the payment attributes itself the moment it lands.` : ''}
+        ${clearingCount ? `<strong>${clearingCount} has a payment clearing right now</strong> — connect it before it settles and it lands on the job by itself. ` : ''}${unpaidCount ? `${unpaidCount} hasn't been paid yet — connecting those now means the payment attributes itself when it arrives.` : ''}
       </p>
       ${ordered.map((r) => {
         const kind = r.type === 'deposit' ? '20% Deposit' : r.type === 'balance' ? '80% Balance' : 'Custom';
+        const what = r.kind === 'invoice' ? `Invoice ${r.number ? escapeHtml(r.number) : ''}`.trim() : 'Payment link';
+        // A payment mid-clear is the urgent one: connect before it settles
+        // and it lands on the job by itself.
+        const state = r.paid ? 'Paid'
+          : r.processing ? 'Payment clearing'
+          : (r.emailSent ? 'Sent, awaiting payment' : 'Not sent yet');
+        const stateCls = r.paid ? 'paid' : r.processing ? 'processing' : 'awaiting';
         return `
         <div class="selected-job-banner" style="display:block; margin-bottom:10px;">
           <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
@@ -1966,16 +1977,17 @@ function renderUnconnectedLinks(rows) {
             </div>
             <div style="text-align:right; white-space:nowrap;">
               <div><strong>${fmtMoney(r.amountCents)}</strong></div>
-              <span class="badge ${r.paid ? 'paid' : 'awaiting'}">${r.paid ? 'Paid' : (r.emailSent ? 'Sent, awaiting payment' : 'Not sent yet')}</span>
+              <span class="badge ${stateCls}">${escapeHtml(state)}</span>
+              ${r.stripeUrl ? `<div><a href="${escapeHtml(r.stripeUrl)}" target="_blank" rel="noopener" class="chip-link">Open in Stripe</a></div>` : ''}
             </div>
           </div>
-          <div class="cust-sub" style="margin-top:6px;">${escapeHtml(kind)}${r.createdAt ? ' · created ' + fmtDateShort(r.createdAt) : ''}</div>
+          <div class="cust-sub" style="margin-top:6px;"><strong>${escapeHtml(what)}</strong> · ${escapeHtml(kind)}${r.createdAt ? ' · created ' + fmtDateShort(r.createdAt) : ''}</div>
           <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
             <select class="field-input cl-job" data-link="${escapeHtml(r.id)}" style="flex:1; min-width:220px; margin:0;">
               <option value="">Connect to a job on the board…</option>
               ${jobOptionsHtml({ grossCents: r.amountCents })}
             </select>
-            <button type="button" class="secondary cl-connect" data-link="${escapeHtml(r.id)}" style="margin:0;">Connect</button>
+            <button type="button" class="secondary cl-connect" data-link="${escapeHtml(r.id)}" data-kind="${escapeHtml(r.kind || 'link')}" style="margin:0;">Connect</button>
           </div>
           <div class="cust-sub cl-result" data-link="${escapeHtml(r.id)}" style="margin-top:6px;"></div>
         </div>`;
@@ -2008,7 +2020,9 @@ async function connectLinkToJob(btn) {
   btn.textContent = 'Connecting…';
   btn.disabled = true;
   try {
-    const res = await fetch(`/api/links/${id}/connect-job`, {
+    const kind = btn.getAttribute('data-kind') || 'link';
+    const url = kind === 'invoice' ? `/api/invoices/${id}/connect-job` : `/api/links/${id}/connect-job`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
       body: JSON.stringify({ mondayItemId: sel.value }),
