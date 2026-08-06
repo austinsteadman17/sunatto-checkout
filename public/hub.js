@@ -104,6 +104,11 @@ const ciAmountDueValue = document.getElementById('ci-amount-due-value');
 const ciError = document.getElementById('ci-error');
 const ciSuccess = document.getElementById('ci-success');
 const ciSubmitButton = document.getElementById('ci-submit-button');
+const ciDeliveryInvoiceBtn = document.getElementById('ci-delivery-invoice-btn');
+const ciDeliveryLinkBtn = document.getElementById('ci-delivery-link-btn');
+const ciDeliveryNote = document.getElementById('ci-delivery-note');
+const ciSurchargeRow = document.getElementById('ci-surcharge-row');
+const ciSurchargeValue = document.getElementById('ci-surcharge-value');
 
 const changePinToggleButton = document.getElementById('change-pin-toggle-button');
 const changePinPanel = document.getElementById('change-pin-panel');
@@ -1285,6 +1290,27 @@ backToHubButton.addEventListener('click', () => {
 
 let ciMode = 'flat';
 let ciSplitKind = 'deposit';
+// 'invoice' — a Stripe hosted invoice, paid by bank transfer, no surcharge.
+// 'link'    — checkout.html, paid by card, 3% added at the point of payment.
+// These are genuinely different products, not a formatting choice, which is
+// why it's asked before anything else on the form.
+let ciDelivery = 'invoice';
+
+// Mirrors SURCHARGE_RATE in server.js. Only ever used to SHOW the figure
+// before sending — the real charge is calculated server-side at payment
+// time, so a drift here can mislead but can never overcharge anyone.
+const CI_SURCHARGE_RATE = 0.03;
+
+function setCiDelivery(mode) {
+  ciDelivery = mode;
+  ciDeliveryInvoiceBtn.classList.toggle('active', mode === 'invoice');
+  ciDeliveryLinkBtn.classList.toggle('active', mode === 'link');
+  ciDeliveryNote.textContent = mode === 'invoice'
+    ? 'They get a Stripe invoice and pay by bank transfer. No surcharge — they pay exactly the amount below.'
+    : 'They get a link and enter their card. Credit cards carry a 3% surcharge; debit cards do not. Use this when they have asked to pay by card.';
+  ciSubmitButton.textContent = mode === 'invoice' ? 'Create & Send Invoice' : 'Create & Send Payment Link';
+  recomputeCi();
+}
 
 attachCommaFormatting(ciFlatAmountField);
 attachCommaFormatting(ciSplitTotalCostField);
@@ -1300,6 +1326,7 @@ function openCustomInvoiceStep() {
   ciFlatAmountField.value = '';
   ciSplitDescriptionField.value = '';
   ciSplitTotalCostField.value = '';
+  setCiDelivery('invoice');
   setCiMode('flat');
   setCiSplitKind('deposit');
   generateSubtitle.textContent = 'Create and send a one-off Stripe invoice for a customer not on the Monday board.';
@@ -1334,9 +1361,25 @@ function setCiSplitKind(kind) {
 }
 
 function updateCiAmountCaption() {
-  ciAmountDueCaption.textContent = ciMode === 'flat'
+  const base = ciMode === 'flat'
     ? 'Amount due'
     : (ciSplitKind === 'deposit' ? 'Amount due (20%)' : 'Amount due (80%)');
+  // On a payment link the figure above is NOT what leaves their account, so
+  // say what it is rather than letting "Amount due" imply the total.
+  ciAmountDueCaption.textContent = ciDelivery === 'link' ? base + ' — toward the job' : base;
+}
+
+// The surcharge line only exists for links, and only once there's an amount
+// to apply it to. Showing "$0.00 charged" on an empty form is noise.
+function updateCiSurchargeRow() {
+  const base = currentCiAmountCents();
+  if (ciDelivery !== 'link' || base <= 0) {
+    ciSurchargeRow.style.display = 'none';
+    return;
+  }
+  const total = base + Math.round(base * CI_SURCHARGE_RATE);
+  ciSurchargeRow.style.display = 'flex';
+  ciSurchargeValue.textContent = fmtMoney(total);
 }
 
 function currentCiAmountCents() {
@@ -1351,9 +1394,27 @@ function currentCiAmountCents() {
   return Math.round(total * rate * 100);
 }
 
+// The checkout URL for a custom customer. Same shape as the job-backed one,
+// but every field is typed rather than pulled from the board. The ref is what
+// lets the payment find its way back to the hub record — and, once someone
+// connects that record to a job, onto the job itself.
+function buildCiCheckoutUrl(ref) {
+  const out = new URLSearchParams();
+  out.set('type', ciMode === 'flat' ? 'custom' : ciSplitKind);
+  out.set('amount', (currentCiAmountCents() / 100).toFixed(2));
+  out.set('ref', ref);
+  if (ciNameField.value.trim()) out.set('name', ciNameField.value.trim());
+  if (ciEmailField.value.trim()) out.set('email', ciEmailField.value.trim());
+  if (ciPhoneField.value.trim()) out.set('phone', ciPhoneField.value.trim());
+  if (ciAddressField.value.trim()) out.set('address', ciAddressField.value.trim());
+  return `${window.location.origin}/checkout.html?${out.toString()}`;
+}
+
 function recomputeCi() {
   const cents = currentCiAmountCents();
   ciAmountDueValue.textContent = fmtMoney(cents);
+  updateCiAmountCaption();
+  updateCiSurchargeRow();
 
   const email = ciEmailField.value.trim();
   const name = ciNameField.value.trim();
@@ -1367,6 +1428,8 @@ function recomputeCi() {
 
 customInvoiceEntryButton.addEventListener('click', openCustomInvoiceStep);
 ciBackButton.addEventListener('click', closeCustomInvoiceStep);
+ciDeliveryInvoiceBtn.addEventListener('click', () => setCiDelivery('invoice'));
+ciDeliveryLinkBtn.addEventListener('click', () => setCiDelivery('link'));
 ciModeFlatBtn.addEventListener('click', () => setCiMode('flat'));
 ciModeSplitBtn.addEventListener('click', () => setCiMode('split'));
 ciSplitDepositBtn.addEventListener('click', () => setCiSplitKind('deposit'));
@@ -1399,6 +1462,71 @@ ciSubmitButton.addEventListener('click', async () => {
   }
 
   try {
+    if (ciDelivery === 'link') {
+      // A payment link is a hub record plus a checkout URL — there is no
+      // Stripe object until the customer actually pays, which is exactly why
+      // the surcharge can be applied at that moment.
+      const ref = crypto.randomUUID();
+      const checkoutUrl = buildCiCheckoutUrl(ref);
+      const linkType = ciMode === 'flat' ? 'custom' : ciSplitKind;
+
+      const rec = await fetch('/api/links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: ref,
+          // Deliberately blank: this customer isn't on the board yet. It shows
+          // up under "Not connected to a job yet" in Jobs, where it can be
+          // attached once the rep has entered them properly.
+          mondayItemId: '',
+          customerName: payload.customerName,
+          customerEmail: payload.customerEmail,
+          customerPhone: payload.customerPhone || '',
+          jobAddress: payload.customerAddress || '',
+          type: linkType,
+          amount: (currentCiAmountCents() / 100).toFixed(2),
+          checkoutUrl,
+        }),
+      });
+      const recData = await rec.json();
+      if (!rec.ok) throw new Error(recData.error || 'Could not record the payment link.');
+
+      const mail = await fetch('/api/send-homeowner-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerName: payload.customerName,
+          customerEmail: payload.customerEmail,
+          jobAddress: payload.customerAddress || '',
+          type: linkType,
+          amount: (currentCiAmountCents() / 100).toFixed(2),
+          checkoutUrl,
+        }),
+      });
+      const mailData = await mail.json();
+      if (!mail.ok) {
+        // The link exists and works — only the email failed. Say exactly that
+        // rather than implying nothing happened, and hand over the URL.
+        throw new Error(`Link created but the email didn't send (${mailData.error || 'unknown error'}). You can copy it from the Jobs screen.`);
+      }
+      // Only now is it genuinely "sent" — this flag drives the Sent/Not-sent
+      // distinction in the hub, so it must not be set optimistically.
+      fetch(`/api/links/${ref}/mark-emailed`, { method: 'POST' }).catch(() => {});
+
+      const base = currentCiAmountCents();
+      const total = base + Math.round(base * CI_SURCHARGE_RATE);
+      ciSuccess.textContent = `Payment link sent to ${payload.customerEmail}. ${fmtMoney(base)} goes toward the job; on a credit card they'd pay ${fmtMoney(total)} with the 3% surcharge.`;
+      ciNameField.value = '';
+      ciEmailField.value = '';
+      ciPhoneField.value = '';
+      ciAddressField.value = '';
+      ciFlatDescriptionField.value = '';
+      ciFlatAmountField.value = '';
+      ciSplitDescriptionField.value = '';
+      ciSplitTotalCostField.value = '';
+      return;
+    }
+
     const res = await fetch('/api/custom-invoice', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
