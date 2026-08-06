@@ -136,6 +136,17 @@
           <button type="button" class="link-button" id="ci-back-button" style="width:auto; margin:0;">Back</button>
         </div>
 
+        <!-- How this goes out decides whether a surcharge applies, so it's the
+             first choice on the form rather than a detail at the bottom. Worded
+             by consequence: nobody should have to remember that "invoice" means
+             "no 3%". -->
+        <label class="field-label">How should they pay?</label>
+        <div class="type-toggle">
+          <button type="button" id="ci-delivery-invoice-btn" class="active">Invoice — bank transfer</button>
+          <button type="button" id="ci-delivery-link-btn">Payment link — card</button>
+        </div>
+        <div class="cust-sub" id="ci-delivery-note" style="margin-bottom: var(--sp-3);"></div>
+
         <label class="field-label" for="ci-name">Customer name</label>
         <input type="text" id="ci-name" class="field-input" placeholder="Jane Doe" />
 
@@ -186,6 +197,17 @@
             <span id="ci-amount-due-caption">Amount due</span>
           </span>
           <span class="value" id="ci-amount-due-value">$0.00</span>
+        </div>
+
+        <!-- Only shown for payment links. The figure above is what pays down
+             the job; this is what actually leaves the customer's account. Two
+             different numbers, both true, so show both rather than picking. -->
+        <div class="locked-amount" id="ci-surcharge-row" style="display:none;">
+          <span class="label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><path d="M2 10h20"></path></svg>
+            <span>On a credit card, they'd pay</span>
+          </span>
+          <span class="value" id="ci-surcharge-value">$0.00</span>
         </div>
 
         <div class="error-message" id="ci-error"></div>
