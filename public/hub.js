@@ -1716,6 +1716,7 @@ const jobsBackButton = document.getElementById('back-to-invoices-from-jobs-butto
 const jobsList = document.getElementById('jobs-list');
 const jobsVerification = document.getElementById('jobs-verification');
 const jobsUnattributed = document.getElementById('jobs-unattributed');
+const jobsUnconnected = document.getElementById('jobs-unconnected');
 const jobsSearch = document.getElementById('jobs-search');
 
 let jobsData = null;
@@ -1927,6 +1928,104 @@ async function linkPaymentToJob(btn) {
   }
 }
 
+// Payment links raised before their job existed on the board — the in-home
+// "they want to pay right now" case. Shown so they can be joined up the
+// moment the rep enters the job properly, rather than being remembered.
+//
+// Connecting an UNPAID link is the valuable moment: do it before they pay
+// and the payment attributes itself, so it never becomes money nobody can
+// place. That's why unpaid ones are listed first and worded as the priority.
+function renderUnconnectedLinks(rows) {
+  if (!rows || !rows.length) {
+    jobsUnconnected.innerHTML = '';
+    return;
+  }
+  const ordered = rows.slice().sort((a, b) => {
+    if (a.paid !== b.paid) return a.paid ? 1 : -1; // unpaid first
+    return (b.amountCents || 0) - (a.amountCents || 0);
+  });
+  const unpaidCount = ordered.filter((r) => !r.paid).length;
+
+  jobsUnconnected.innerHTML = `
+    <div class="create-user-card" style="margin-top:16px;">
+      <label class="field-label">Payment links with no job yet — ${ordered.length}</label>
+      <p class="cust-sub" style="margin-bottom:12px;">
+        These were raised before the job existed on the Monday board. Once your rep has
+        created the job properly, connect it here.
+        ${unpaidCount ? `<strong>${unpaidCount} of them hasn't been paid yet</strong> — connecting those now means the payment attributes itself the moment it lands.` : ''}
+      </p>
+      ${ordered.map((r) => {
+        const kind = r.type === 'deposit' ? '20% Deposit' : r.type === 'balance' ? '80% Balance' : 'Custom';
+        return `
+        <div class="selected-job-banner" style="display:block; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
+            <div style="min-width:0;">
+              <div class="cust-name">${escapeHtml(r.customerName || r.customerEmail || '(no name)')}</div>
+              <div class="cust-sub">${escapeHtml(r.customerEmail || '')}</div>
+              ${r.jobAddress ? `<div class="cust-sub">${escapeHtml(r.jobAddress)}</div>` : ''}
+            </div>
+            <div style="text-align:right; white-space:nowrap;">
+              <div><strong>${fmtMoney(r.amountCents)}</strong></div>
+              <span class="badge ${r.paid ? 'paid' : 'awaiting'}">${r.paid ? 'Paid' : (r.emailSent ? 'Sent, awaiting payment' : 'Not sent yet')}</span>
+            </div>
+          </div>
+          <div class="cust-sub" style="margin-top:6px;">${escapeHtml(kind)}${r.createdAt ? ' · created ' + fmtDateShort(r.createdAt) : ''}</div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+            <select class="field-input cl-job" data-link="${escapeHtml(r.id)}" style="flex:1; min-width:220px; margin:0;">
+              <option value="">Connect to a job on the board…</option>
+              ${jobOptionsHtml({ grossCents: r.amountCents })}
+            </select>
+            <button type="button" class="secondary cl-connect" data-link="${escapeHtml(r.id)}" style="margin:0;">Connect</button>
+          </div>
+          <div class="cust-sub cl-result" data-link="${escapeHtml(r.id)}" style="margin-top:6px;"></div>
+        </div>`;
+      }).join('')}
+      <p class="cust-sub" style="margin-top:4px;">
+        Not seeing the job? It hasn't been added to the Monday board yet. Nothing here creates it —
+        that stays with your rep so it lands with the deal type, total cost and everything else filled in.
+      </p>
+    </div>`;
+
+  jobsUnconnected.querySelectorAll('.cl-connect').forEach((btn) => {
+    btn.addEventListener('click', () => connectLinkToJob(btn));
+  });
+}
+
+async function connectLinkToJob(btn) {
+  const id = btn.getAttribute('data-link');
+  const sel = jobsUnconnected.querySelector(`.cl-job[data-link="${id}"]`);
+  const out = jobsUnconnected.querySelector(`.cl-result[data-link="${id}"]`);
+  if (!sel.value) { out.textContent = 'Pick which job this belongs to first.'; return; }
+
+  const jobName = sel.options[sel.selectedIndex].textContent.split(' — ')[0];
+  const ok = await showConfirmModal({
+    title: 'Connect this payment link?',
+    message: `This link will belong to ${jobName}. If it's already been paid, that payment is attributed too. A note goes on the job in Monday either way.`,
+    confirmLabel: 'Connect',
+  });
+  if (!ok) return;
+
+  btn.textContent = 'Connecting…';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/links/${id}/connect-job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ mondayItemId: sel.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not connect this link.');
+    out.textContent = data.taggedPayment
+      ? 'Connected, and the payment already made was attributed to that job.'
+      : 'Connected. When they pay, it will land on that job automatically.';
+    await loadJobs();
+  } catch (err) {
+    btn.textContent = 'Connect';
+    btn.disabled = false;
+    out.textContent = err.message;
+  }
+}
+
 function renderJobs() {
   if (!jobsData) return;
   const v = jobsData.verification;
@@ -1990,12 +2089,14 @@ function renderJobs() {
     : '<div class="cust-sub" style="padding:12px 0;">No jobs match that search.</div>';
 
   renderUnattributed(jobsData.unattributed || []);
+  renderUnconnectedLinks(jobsData.unconnectedLinks || []);
 }
 
 async function loadJobs() {
   jobsList.innerHTML = '<div class="cust-sub" style="padding:12px 0;">Working out where every job stands…</div>';
   jobsVerification.innerHTML = '';
   jobsUnattributed.innerHTML = '';
+  jobsUnconnected.innerHTML = '';
   try {
     const res = await fetch('/api/jobs', { headers: { 'X-Hub-Session': getSessionToken() } });
     const data = await res.json();
