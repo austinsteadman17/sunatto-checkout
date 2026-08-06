@@ -3794,6 +3794,7 @@ async function buildJobsReport(user, admin) {
   const unconnectedLinks = allLinks
     .filter((l) => !l.voided && !l.mondayItemId)
     .map((l) => ({
+      kind: 'link',
       id: l.id,
       customerName: l.customerName || '',
       customerEmail: l.customerEmail || '',
@@ -3807,10 +3808,41 @@ async function buildJobsReport(user, admin) {
     }))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
 
+  // Invoices raised the same way — a custom invoice for someone not yet on
+  // the board. These were invisible here at first, which is how Narayan
+  // Ambatipudi's $6,188.20 ended up mid-payment with nowhere to land: a
+  // payment link can never read "Processing", so an invoice showing that
+  // status was proof the list was only looking at half the picture.
+  const unconnectedInvoices = invoices
+    .filter((inv) => inv.status !== 'void' && !(inv.metadata && inv.metadata.monday_item_id))
+    .map((inv) => {
+      const addressField = (inv.custom_fields || []).find((f) => /address/i.test(f.name || ''));
+      const pi = inv.payment_intent;
+      const piStatus = pi && typeof pi === 'object' ? pi.status : null;
+      return {
+        kind: 'invoice',
+        id: inv.id,
+        number: inv.number || null,
+        customerName: inv.customer_name || '',
+        customerEmail: inv.customer_email || '',
+        jobAddress: (addressField && addressField.value) || '',
+        type: (inv.metadata && inv.metadata.sunatto_invoice_kind) || 'custom',
+        amountCents: inv.total,
+        createdAt: inv.created ? new Date(inv.created * 1000).toISOString() : null,
+        emailSent: inv.status !== 'draft',
+        paid: inv.status === 'paid',
+        // An ACH or card payment still clearing. Connecting now means it
+        // lands on the right job the moment it settles.
+        processing: piStatus === 'processing' || piStatus === 'requires_action',
+        stripeUrl: `https://dashboard.stripe.com/invoices/${inv.id}`,
+      };
+    })
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+
   return {
     jobs: out,
     unattributed: orphans.sort((a, b) => b.grossCents - a.grossCents),
-    unconnectedLinks,
+    unconnectedLinks: [...unconnectedLinks, ...unconnectedInvoices],
     // The proof the join is complete. Every dollar Stripe says it took must
     // be either attributed to a job or sitting visibly in the unattributed
     // pile. If these don't add up, something is being silently dropped and
@@ -3995,6 +4027,55 @@ app.post('/api/links/:id/connect-job', async (req, res) => {
     res.json({ ok: true, linkId: record.id, mondayItemId: String(mondayItemId), jobName: job.name || '', taggedPayment });
   } catch (err) {
     console.error('connect-job error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Same idea as connect-job for links, for an invoice raised before its job
+// existed. Only the INVOICE needs tagging: buildJobsReport already lets an
+// invoice payment inherit its job from the invoice it settled, so a payment
+// still clearing will attach itself correctly the moment it succeeds.
+app.post('/api/invoices/:id/connect-job', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const { mondayItemId, milestone } = req.body || {};
+    if (!mondayItemId) return res.status(400).json({ error: 'Pick a job first.' });
+
+    const job = await fetchMondayItemById(String(mondayItemId));
+    if (!job) return res.status(404).json({ error: 'That job is not on the board.' });
+
+    const invoice = await stripe.invoices.retrieve(req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'That invoice is not in Stripe.' });
+    if (invoice.status === 'void') return res.status(409).json({ error: 'That invoice was voided.' });
+    if (invoice.metadata && invoice.metadata.monday_item_id) {
+      return res.status(409).json({ error: 'That invoice is already connected to a job.' });
+    }
+
+    await stripe.invoices.update(req.params.id, {
+      metadata: {
+        monday_item_id: String(mondayItemId),
+        sunatto_milestone: milestone || (invoice.metadata && invoice.metadata.sunatto_invoice_kind) || 'custom',
+        sunatto_tagged_by: 'connected_invoice',
+        sunatto_tagged_how: fullNameOf(user),
+      },
+    });
+
+    try {
+      const dollars = ((invoice.total || 0) / 100).toFixed(2);
+      await postMondayComment(
+        String(mondayItemId),
+        `Invoice ${invoice.number || req.params.id} for $${dollars} was raised in the Payment Links Hub `
+        + `before this job existed on the board, and connected to it by ${fullNameOf(user)}. `
+        + `Any payment against it will count toward this job.`
+      );
+    } catch (noteErr) {
+      console.warn('invoice connect-job: could not post Monday note:', noteErr.message);
+    }
+
+    res.json({ ok: true, invoiceId: req.params.id, mondayItemId: String(mondayItemId), jobName: job.name || '' });
+  } catch (err) {
+    console.error('invoice connect-job error:', err);
     res.status(500).json({ error: err.message });
   }
 });
