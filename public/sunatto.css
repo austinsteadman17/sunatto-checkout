@@ -917,10 +917,33 @@ tbody tr:last-child td { border-bottom: none; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  /* Asymmetric because the ::before dot sits inside the left padding — this
+     makes the visual gap either side of the pill's content look equal. */
   padding: 4px 10px 4px 8px;
   border-radius: 999px;
   white-space: nowrap;
+  /* Two properties that do most of the work in making these look uniform.
+     line-height:1 stops the pill's height inheriting whatever line-height
+     its container happens to have, which is why identical badges rendered
+     at different heights in the table vs the job cards. vertical-align
+     keeps a badge sitting mid-line when it appears inside a run of text
+     rather than on its own — without it, an inline badge rides low and
+     looks like it's falling out of the sentence. */
+  line-height: 1;
+  vertical-align: middle;
 }
+
+/* Any place two or more badges (or a badge plus text) sit together. One
+   gap value, one alignment, everywhere — replaces the assorted inline
+   margin-top / margin-left values these had grown. */
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* Stacked under a label (e.g. a source tag above a type badge). */
+.badge-stack { margin-top: 6px; }
 .badge::before {
   content: '';
   width: 5px;
