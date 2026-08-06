@@ -1746,7 +1746,7 @@ function jobPaymentHtml(p) {
     ? fmtMoney(p.baseCents)
     : `${fmtMoney(p.baseCents)} <span class="cust-sub" style="display:inline;">(${fmtMoney(p.grossCents)} charged inc. surcharge)</span>`;
   return `
-    <div class="cust-sub" style="display:flex; gap:8px; align-items:baseline;">
+    <div class="cust-sub badge-row" style="gap:8px;">
       <span style="color:var(--brand-ink);">✓</span>
       <span style="flex:1;">${escapeHtml(label)}${p.method ? ' · ' + escapeHtml(p.method) : ''}</span>
       <span>${money}</span>
@@ -1759,7 +1759,7 @@ function jobOpenInvoiceHtml(inv) {
   const label = MILESTONE_LABEL[inv.milestone] || 'Custom';
   const overdue = inv.dueDate && new Date(inv.dueDate) < new Date();
   return `
-    <div class="cust-sub" style="display:flex; gap:8px; align-items:baseline;">
+    <div class="cust-sub badge-row" style="gap:8px;">
       <span style="color:var(--muted-foreground);">⧗</span>
       <span style="flex:1;">${escapeHtml(label)} — invoice ${inv.number ? escapeHtml(inv.number) : ''} ${overdue ? '<span class="badge overdue">Past due</span>' : '<span class="badge awaiting">Awaiting</span>'}</span>
       <span>${fmtMoney(inv.amountCents)}</span>
@@ -1787,7 +1787,7 @@ function jobCardHtml(j) {
   ].join('');
 
   const reconciled = j.reconciledCents
-    ? `<div class="cust-sub" style="display:flex; gap:8px; align-items:baseline;">
+    ? `<div class="cust-sub badge-row" style="gap:8px;">
          <span style="color:var(--muted-foreground);">↺</span>
          <span style="flex:1;">Settled without a payment${j.reconciliationNotes ? ' — ' + escapeHtml(j.reconciliationNotes) : ''}</span>
          <span>${fmtMoney(j.reconciledCents)}</span>
@@ -2969,7 +2969,7 @@ function renderCombinedRow(entry) {
         </td>
         <td>
           <span class="source-tag">Payment Link</span>
-          <div style="margin-top:5px;"><span class="badge ${link.type}">${typeLabel}</span></div>
+          <div class="badge-stack"><span class="badge ${link.type}">${typeLabel}</span></div>
         </td>
         <td class="tabular">${fmtMoney(link.amountCents)}</td>
         <td>${stageBadgeHtml(entry)}</td>
