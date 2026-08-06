@@ -931,6 +931,10 @@ tbody tr:last-child td { border-bottom: none; }
      looks like it's falling out of the sentence. */
   line-height: 1;
   vertical-align: middle;
+  /* A transparent border so the one bordered variant (.monday-status) is the
+     same height as every other badge instead of 2px taller. Measured: without
+     this, monday-status renders 20px against everything else's 18px. */
+  border: 1px solid transparent;
 }
 
 /* Any place two or more badges (or a badge plus text) sit together. One
