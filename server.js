@@ -3787,9 +3787,30 @@ async function buildJobsReport(user, admin) {
 
   const orphanGross = orphans.reduce((s, o) => s + o.grossCents, 0);
 
+  // Payment links raised before their job existed on the board. Unpaid ones
+  // matter most: connect them now and the payment tags itself when it lands,
+  // instead of arriving as money nobody can place.
+  const allLinks = await loadLinks();
+  const unconnectedLinks = allLinks
+    .filter((l) => !l.voided && !l.mondayItemId)
+    .map((l) => ({
+      id: l.id,
+      customerName: l.customerName || '',
+      customerEmail: l.customerEmail || '',
+      jobAddress: l.jobAddress || '',
+      type: l.type || 'custom',
+      amountCents: l.amountCents || 0,
+      createdAt: l.createdAt || null,
+      lastSentAt: l.lastSentAt || null,
+      emailSent: !!l.emailSent,
+      paid: !!l.paid,
+    }))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+
   return {
     jobs: out,
     unattributed: orphans.sort((a, b) => b.grossCents - a.grossCents),
+    unconnectedLinks,
     // The proof the join is complete. Every dollar Stripe says it took must
     // be either attributed to a job or sitting visibly in the unattributed
     // pile. If these don't add up, something is being silently dropped and
@@ -3890,6 +3911,90 @@ app.post('/api/link-payment', async (req, res) => {
     res.json({ ok: true, paymentIntentId, mondayItemId: String(mondayItemId), jobName: job.name || '' });
   } catch (err) {
     console.error('link-payment error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Connects a payment link raised before its job existed to that job, once
+// the rep has created it on the board properly.
+//
+// The situation this exists for: a rep is sitting in someone's front room,
+// the customer wants to pay the 20% there and then, and the job hasn't been
+// entered on Monday yet. Waiting is the wrong answer — take the money. But
+// the link is then orphaned, and when the payment lands it has no job to
+// attach to.
+//
+// Deliberately does NOT create the Monday item. A job created from the
+// three fields a checkout page knows would be missing the rep, the deal
+// type, Financed By and the total cost — a half-filled row that looks real
+// and quietly breaks every figure that reads it. The board entry stays a
+// human step; this only draws the line between the two once it exists.
+//
+// Connecting BEFORE payment is what makes this clean: create-intent resolves
+// the job from the link record, so the payment tags itself the moment it
+// happens and never enters the unattributed pile at all.
+app.post('/api/links/:id/connect-job', async (req, res) => {
+  const user = await requireHubUser(req, res);
+  if (!user) return;
+  try {
+    const { mondayItemId } = req.body || {};
+    if (!mondayItemId) return res.status(400).json({ error: 'Pick a job first.' });
+
+    const job = await fetchMondayItemById(String(mondayItemId));
+    if (!job) return res.status(404).json({ error: 'That job is not on the board.' });
+
+    const links = await loadLinks();
+    const record = links.find((l) => l.id === req.params.id);
+    if (!record) return res.status(404).json({ error: 'That payment link no longer exists.' });
+    if (record.voided) return res.status(409).json({ error: 'That link was voided.' });
+    if (record.mondayItemId) {
+      return res.status(409).json({ error: 'That link is already connected to a job.' });
+    }
+
+    record.mondayItemId = String(mondayItemId);
+    record.connectedBy = fullNameOf(user);
+    record.connectedAt = new Date().toISOString();
+    await saveLinks(links);
+
+    // If the customer has ALREADY paid, the link record alone is too late —
+    // the PaymentIntent is out there untagged. Tag it here too so the job
+    // totals are right immediately rather than after a backfill run.
+    let taggedPayment = null;
+    if (record.paid && record.paymentIntentId) {
+      try {
+        const pi = await stripe.paymentIntents.retrieve(record.paymentIntentId);
+        if (pi && pi.status === 'succeeded' && !(pi.metadata && pi.metadata.monday_item_id)) {
+          await stripe.paymentIntents.update(record.paymentIntentId, {
+            metadata: {
+              monday_item_id: String(mondayItemId),
+              sunatto_milestone: record.type || 'custom',
+              sunatto_tagged_by: 'connected_link',
+              sunatto_tagged_how: fullNameOf(user),
+            },
+          });
+          taggedPayment = record.paymentIntentId;
+        }
+      } catch (piErr) {
+        // The connection itself succeeded; surface this rather than failing.
+        console.warn('connect-job: could not tag the payment:', piErr.message);
+      }
+    }
+
+    try {
+      const dollars = ((record.amountCents || 0) / 100).toFixed(2);
+      await postMondayComment(
+        String(mondayItemId),
+        `A $${dollars} ${record.type || 'custom'} payment link for ${record.customerName || 'this customer'} `
+        + `was created in the Payment Links Hub before this job existed on the board, and connected to it by `
+        + `${fullNameOf(user)}.${taggedPayment ? ' The payment already made against it has been attributed to this job.' : ' It has not been paid yet.'}`
+      );
+    } catch (noteErr) {
+      console.warn('connect-job: could not post Monday note:', noteErr.message);
+    }
+
+    res.json({ ok: true, linkId: record.id, mondayItemId: String(mondayItemId), jobName: job.name || '', taggedPayment });
+  } catch (err) {
+    console.error('connect-job error:', err);
     res.status(500).json({ error: err.message });
   }
 });
