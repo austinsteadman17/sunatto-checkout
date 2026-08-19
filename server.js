@@ -1517,6 +1517,11 @@ function publicInvoice(invoice, matchedJob) {
   const type = taggedKind || guessInvoiceType(invoice.total, matchedJob ? matchedJob.totalCostCents : null) || (isCustom ? 'custom' : null);
   return {
     id: invoice.id,
+    // Whether this invoice knows which job it belongs to. Drives the "Link to
+    // Job" action in the hub — an untagged invoice contributes to no balance,
+    // so it needs to be visible and fixable from the row you're looking at
+    // rather than only from the Jobs screen.
+    mondayItemId: (invoice.metadata && invoice.metadata.monday_item_id) || null,
     number: invoice.number,
     status: invoice.status, // draft | open | paid | uncollectible | void
     customerName: invoice.customer_name || '',
