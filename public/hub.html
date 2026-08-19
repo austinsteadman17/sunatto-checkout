@@ -232,6 +232,14 @@
           <button type="button" id="gen-type-custom-btn">Custom Amount</button>
         </div>
 
+        <!-- Defaults to the job's customer, but editable: the person paying
+             isn't always the person on the contract. A spouse, a parent, a
+             company book-keeper. Changing this changes who the link is
+             addressed to — it does NOT change which job it belongs to. -->
+        <label class="field-label" for="gen-name">Send to (name)</label>
+        <input type="text" id="gen-name" class="field-input" placeholder="Jane Doe" />
+        <div class="cust-sub" id="gen-name-note" style="margin-bottom: var(--sp-3);"></div>
+
         <label class="field-label" for="gen-email">Email</label>
         <input type="email" id="gen-email" class="field-input" placeholder="jane@example.com" />
 
