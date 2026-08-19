@@ -66,6 +66,8 @@ const backToHubButton = document.getElementById('back-to-hub-button');
 const genTypeDepositBtn = document.getElementById('gen-type-deposit-btn');
 const genTypeBalanceBtn = document.getElementById('gen-type-balance-btn');
 const genTypeCustomBtn = document.getElementById('gen-type-custom-btn');
+const genNameField = document.getElementById('gen-name');
+const genNameNote = document.getElementById('gen-name-note');
 const genEmailField = document.getElementById('gen-email');
 const genPhoneField = document.getElementById('gen-phone');
 const genTotalCostBlock = document.getElementById('gen-total-cost-block');
@@ -1051,12 +1053,42 @@ function renderJobPicker() {
   });
 }
 
+// Who the link is addressed to. Falls back to the job's customer so the
+// default behaviour is unchanged, but a typed name wins.
+//
+// Safe to vary ONLY because attribution now runs on monday_item_id rather
+// than on matching names and addresses. Under the old matcher, sending
+// Steve's balance to his wife would have produced a payment nothing could
+// place — which is precisely how Bonnie Canesso's $5,300 went missing.
+function genRecipientName() {
+  const typed = (genNameField.value || '').trim();
+  if (typed) return typed;
+  return (selectedJob && selectedJob.name) || '';
+}
+
+// Says plainly that a different name doesn't move the money. Someone about
+// to send a $14,800 request under a name that isn't on the contract should
+// not have to guess whether that breaks the job's balance.
+function updateGenNameNote() {
+  const typed = (genNameField.value || '').trim();
+  const jobName = (selectedJob && selectedJob.name) || '';
+  if (!typed || !jobName || typed.toLowerCase() === jobName.toLowerCase()) {
+    genNameNote.textContent = '';
+    return;
+  }
+  genNameNote.textContent = `Addressed to ${typed}, still counted toward ${jobName}'s job.`;
+}
+
 function selectJob(job) {
   selectedJob = job;
   generateError.textContent = '';
   generateSuccess.textContent = '';
   genLastRecordedFingerprint = null;
   genLastRecordedLinkId = null;
+
+  // Prefill with the job's customer — the common case — leaving it editable.
+  genNameField.value = job.name || '';
+  updateGenNameNote();
 
   selectedJobName.textContent = job.name || '(no name)';
   selectedJobAddress.textContent = job.address || '';
@@ -1121,6 +1153,10 @@ function recomputeGen() {
 }
 genTotalCostField.addEventListener('input', recomputeGen);
 genCustomAmountField.addEventListener('input', recomputeGen);
+// The recipient name feeds genFingerprint(), so editing it invalidates the
+// cached link ref and a fresh record is created — the URL and the record can
+// never end up addressed to different people.
+genNameField.addEventListener('input', () => { updateGenNameNote(); recomputeGen(); });
 genEmailField.addEventListener('input', recomputeGen);
 
 // One id per generated link, minted here so the SAME id goes into both the
@@ -1148,7 +1184,7 @@ function buildGenCheckoutUrl() {
   out.set('type', genType);
   out.set('amount', dollars);
   out.set('ref', currentGenLinkRef());
-  if (selectedJob && selectedJob.name) out.set('name', selectedJob.name);
+  if (genRecipientName()) out.set('name', genRecipientName());
   if (genEmailField.value.trim()) out.set('email', genEmailField.value.trim());
   if (genPhoneField.value.trim()) out.set('phone', genPhoneField.value.trim());
   if (selectedJob && selectedJob.address) out.set('address', selectedJob.address);
@@ -1157,7 +1193,7 @@ function buildGenCheckoutUrl() {
 
 function genFingerprint() {
   return JSON.stringify([
-    selectedJob && selectedJob.name,
+    genRecipientName(),
     selectedJob && selectedJob.address,
     genEmailField.value.trim(),
     genPhoneField.value.trim(),
@@ -1186,7 +1222,7 @@ async function recordGenLinkIfNeeded() {
         // themselves — the guesswork that left Bonnie Canesso's $5,300
         // sitting as "Awaiting" for a week after it had cleared.
         mondayItemId: selectedJob ? String(selectedJob.id) : '',
-        customerName: selectedJob ? selectedJob.name : '',
+        customerName: genRecipientName(),
         customerEmail: genEmailField.value.trim(),
         customerPhone: genPhoneField.value.trim(),
         jobAddress: selectedJob ? selectedJob.address : '',
@@ -1229,7 +1265,7 @@ genSendEmailButton.addEventListener('click', async () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        customerName: selectedJob ? selectedJob.name : '',
+        customerName: genRecipientName(),
         customerEmail: genEmailField.value.trim(),
         jobAddress: selectedJob ? selectedJob.address : '',
         type: genType,
