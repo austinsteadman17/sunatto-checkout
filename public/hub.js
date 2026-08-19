@@ -3077,6 +3077,104 @@ function sentCellHtml(entry) {
 // Kept as a thin alias so any older callers keep working.
 function entryTabBucket(entry) { return entryStage(entry); }
 
+// Attaches an invoice to a job from the Invoices row you're already looking at.
+// The same job list and the same endpoint the Jobs screen uses — a second door
+// into one behaviour, not a second implementation.
+//
+// It exists because the natural moment to notice an invoice has no job is right
+// after creating it, on the row itself, not on a different screen.
+async function openLinkJobModal(btn) {
+  const invoiceId = btn.getAttribute('data-id');
+  const who = btn.getAttribute('data-name');
+  const amountCents = Number(btn.getAttribute('data-amount')) || 0;
+
+  const original = btn.textContent;
+  btn.textContent = 'Loading\u2026';
+  btn.disabled = true;
+  let jobs = [];
+  try {
+    const res = await fetch('/api/jobs', { headers: { 'X-Hub-Session': getSessionToken() } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load jobs.');
+    jobs = data.jobs || [];
+  } catch (err) {
+    btn.textContent = original;
+    btn.disabled = false;
+    await showConfirmModal({ title: 'Could not load jobs', message: err.message, confirmLabel: 'OK', danger: true });
+    return;
+  }
+  btn.textContent = original;
+  btn.disabled = false;
+
+  // Same 20/80 arithmetic hint as the Jobs screen. $21,200 against a $26,500
+  // job is unmistakably the 80%, and saying so out loud prevents a mis-link.
+  const scored = jobs.map((j) => {
+    const total = j.totalCostCents || 0;
+    let hint = '';
+    if (total && amountCents) {
+      if (Math.abs(amountCents - Math.round(total * 0.2)) <= 100) hint = ' \u2014 20% of this job';
+      else if (Math.abs(amountCents - Math.round(total * 0.8)) <= 100) hint = ' \u2014 80% of this job';
+      else if (Math.abs(amountCents - total) <= 100) hint = ' \u2014 the full amount';
+    }
+    return { j, hint };
+  }).sort((a, b) => {
+    if (!!a.hint !== !!b.hint) return a.hint ? -1 : 1;
+    return (a.j.name || '').localeCompare(b.j.name || '');
+  });
+
+  const picked = await showJobPickerModal(who, scored);
+  if (!picked) return;
+
+  try {
+    const res = await fetch('/api/invoices/' + invoiceId + '/connect-job', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Hub-Session': getSessionToken() },
+      body: JSON.stringify({ mondayItemId: picked }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not link this invoice.');
+    await showConfirmModal({
+      title: 'Linked',
+      message: 'This invoice now counts toward ' + (data.jobName || 'that job') + '. A note has been added to it on Monday.',
+      confirmLabel: 'OK',
+    });
+    loadAndRender();
+  } catch (err) {
+    await showConfirmModal({ title: 'Could not link it', message: err.message, confirmLabel: 'OK', danger: true });
+  }
+}
+
+// A minimal picker on the same overlay classes the other confirms use, so it
+// looks and behaves like the rest of the hub rather than a bolted-on dialog.
+function showJobPickerModal(who, scored) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.display = 'flex';
+    overlay.innerHTML =
+      '<div class="modal-card">' +
+      '<div class="modal-title">Which job is this for?</div>' +
+      '<div class="modal-message">' + escapeHtml(who) + "'s invoice will be counted toward the job you pick. Nothing about the invoice itself changes.</div>" +
+      '<select class="field-input" id="ljm-select"><option value="">Pick a job\u2026</option>' +
+      scored.map(function (x) {
+        return '<option value="' + escapeHtml(x.j.mondayItemId) + '">' + escapeHtml(x.j.name || '(unnamed)') +
+          (x.j.address ? ' \u2014 ' + escapeHtml(x.j.address) : '') + escapeHtml(x.hint) + '</option>';
+      }).join('') +
+      '</select>' +
+      '<div class="modal-actions"><button type="button" class="secondary" id="ljm-cancel">Cancel</button>' +
+      '<button type="button" class="primary" id="ljm-ok">Link it</button></div></div>';
+    document.body.appendChild(overlay);
+    const close = (val) => { document.body.removeChild(overlay); resolve(val); };
+    overlay.querySelector('#ljm-cancel').addEventListener('click', () => close(null));
+    overlay.querySelector('#ljm-ok').addEventListener('click', () => {
+      const v = overlay.querySelector('#ljm-select').value;
+      if (!v) return; // refuse an empty pick rather than closing silently
+      close(v);
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+  });
+}
+
 function computeInvoicesTabCounts() {
   const counts = { not_sent: 0, awaiting: 0, overdue: 0, processing: 0, paid: 0 };
   const all = [
@@ -3212,6 +3310,7 @@ function renderCombinedRow(entry) {
           ${showSwitch ? `<button type="button" class="secondary switch-btn" data-id="${invoice.id}" data-source="invoice" data-name="${escapeHtml(invoice.customerName || 'this customer')}" title="Customer wants to pay by card — void this invoice and issue a payment link (invoices are bank-only and carry no surcharge)">Switch to Card</button>` : ''}
           ${showMarkPaid ? `<button type="button" class="secondary mark-paid-invoice-btn" data-id="${invoice.id}" data-name="${escapeHtml(invoice.customerName || 'this invoice')}" title="Manually mark this invoice paid — check, cash, or another payment processor">Mark Paid</button>` : ''}
           ${showDelete ? `<button type="button" class="secondary delete-invoice-btn" data-id="${invoice.id}" title="Permanently delete this draft — in the hub and in Stripe">Delete</button>` : ''}
+          ${!invoice.mondayItemId && invoice.status !== 'void' ? `<button type="button" class="secondary link-job-btn" data-id="${escapeHtml(invoice.id)}" data-name="${escapeHtml(invoice.customerName || 'this invoice')}" data-amount="${invoice.totalCents || 0}" title="This invoice isn't counted toward any job yet — attach it to one">Link to Job</button>` : ''}
           ${showVoid ? `<button type="button" class="secondary void-invoice-btn" data-id="${invoice.id}" title="Void this invoice in Stripe and the hub (e.g. customer is paying another way)">Void</button>` : ''}
         </div>
       </td>
@@ -3256,6 +3355,7 @@ function renderCombinedTable(container, query) {
   container.querySelectorAll('.send-invoice-btn').forEach((btn) => btn.addEventListener('click', () => sendInvoiceFromHub(btn)));
   container.querySelectorAll('.delete-invoice-btn').forEach((btn) => btn.addEventListener('click', () => deleteInvoiceDraft(btn)));
   container.querySelectorAll('.void-invoice-btn').forEach((btn) => btn.addEventListener('click', () => voidInvoiceSent(btn)));
+  container.querySelectorAll('.link-job-btn').forEach((btn) => btn.addEventListener('click', () => openLinkJobModal(btn)));
   container.querySelectorAll('.mark-paid-invoice-btn').forEach((btn) => btn.addEventListener('click', () => markInvoicePaid(btn)));
 }
 
